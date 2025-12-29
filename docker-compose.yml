@@ -8,6 +8,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-km_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-knowledge_manager}
+      PGDATA: /var/lib/postgresql/data/pgdata  # Use subdirectory to match existing data
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -83,7 +84,8 @@ services:
 
 volumes:
   postgres_data:
-    driver: local
+    external: true
+    name: docker_postgres_data  # Use existing volume from scripts repo
   task_queue:
     driver: local
 
