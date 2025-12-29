@@ -1,0 +1,93 @@
+services:
+  # PostgreSQL Database - Central data store
+  postgres:
+    image: postgres:16
+    container_name: km-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-km_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_manager}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-scripts:/docker-entrypoint-initdb.d:ro
+    networks:
+      - km-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-km_user} -d ${POSTGRES_DB:-knowledge_manager}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # AI Orchestrator - Task dispatcher and coordinator
+  orchestrator:
+    build:
+      context: ./docker/orchestrator
+      dockerfile: Dockerfile
+    container_name: km-orchestrator
+    restart: unless-stopped
+    environment:
+      # Database connection
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-km_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_manager}
+
+      # Orchestrator config
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WORKER_THREADS: ${WORKER_THREADS:-4}
+      TASK_POLL_INTERVAL: ${TASK_POLL_INTERVAL:-5}
+
+      # LLM Router config (for RTX 5090 models)
+      LLAMA_CPP_HOST: ${LLAMA_CPP_HOST:-host.docker.internal}
+      LLAMA_CPP_PORT: ${LLAMA_CPP_PORT:-8080}
+    ports:
+      - "${ORCHESTRATOR_PORT:-8000}:8000"
+    volumes:
+      # Task queue directory (shared with host CLIs)
+      - task_queue:/app/task_queue
+      # Logs directory
+      - ./logs:/app/logs
+      # Config directory
+      - ./config:/app/config:ro
+    networks:
+      - km-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      # Allow orchestrator to access host services (LLM server, CLIs)
+      - "host.docker.internal:host-gateway"
+
+  # pgAdmin (Optional - for database management)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: km-pgadmin
+    restart: unless-stopped
+    profiles:
+      - admin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@km.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - km-network
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
+    driver: local
+  task_queue:
+    driver: local
+
+networks:
+  km-network:
+    driver: bridge
+    name: km-network
