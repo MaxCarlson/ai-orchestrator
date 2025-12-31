@@ -1,0 +1,192 @@
+/* AI Orchestrator Viewer Styles */
+
+Screen {
+    background: $surface;
+}
+
+/* System Stats Panel */
+#system_stats {
+    height: 7;
+    border: solid $primary;
+    background: $panel;
+    padding: 1;
+}
+
+.stat-line {
+    color: $text;
+}
+
+.stat-label {
+    color: $text-muted;
+}
+
+.stat-value {
+    color: $success;
+    text-style: bold;
+}
+
+.stat-warning {
+    color: $warning;
+}
+
+.stat-error {
+    color: $error;
+}
+
+/* Worker Grid */
+#worker_grid {
+    height: 1fr;
+    border: solid $primary;
+    background: $panel;
+    padding: 1;
+}
+
+.worker-card {
+    border: solid $primary;
+    background: $surface;
+    height: 12;
+    padding: 1;
+    margin: 1;
+}
+
+.worker-card.idle {
+    border: solid $text-muted;
+    background: $surface-darken-1;
+}
+
+.worker-card.assigned {
+    border: solid $warning;
+    background: $warning 10%;
+}
+
+.worker-card.active {
+    border: solid $success;
+    background: $success 10%;
+    text-style: bold;
+}
+
+.worker-card.stalled {
+    border: solid $error;
+    background: $error 20%;
+}
+
+.worker-card.completed {
+    border: solid $accent;
+    background: $accent 10%;
+}
+
+.worker-card.failed {
+    border: solid $error;
+    background: $error 15%;
+}
+
+.worker-card:focus {
+    border: double $accent;
+}
+
+.worker-title {
+    text-style: bold;
+    color: $text;
+}
+
+.worker-status {
+    color: $text-muted;
+}
+
+.worker-metrics {
+    color: $text-muted;
+    text-style: italic;
+}
+
+.worker-output {
+    color: $text;
+    background: $surface-darken-2;
+    padding: 0 1;
+}
+
+/* Activity Log */
+#activity_log {
+    height: 10;
+    border: solid $primary;
+    background: $panel;
+    padding: 1;
+}
+
+.activity-item {
+    color: $text;
+}
+
+.activity-time {
+    color: $text-muted;
+}
+
+.activity-task {
+    color: $accent;
+}
+
+.activity-worker {
+    color: $success;
+}
+
+.activity-error {
+    color: $error;
+}
+
+.activity-info {
+    color: $primary;
+}
+
+/* Worker Detail Screen */
+#worker_detail_header {
+    height: 5;
+    border: solid $primary;
+    background: $panel;
+    padding: 1;
+}
+
+#worker_metrics {
+    height: 5;
+    border: solid $primary;
+    background: $panel;
+    padding: 1;
+}
+
+#worker_output {
+    height: 1fr;
+    border: solid $primary;
+    background: $surface-darken-2;
+    padding: 1;
+}
+
+#task_context {
+    height: 5;
+    border: solid $primary;
+    background: $panel;
+    padding: 1;
+}
+
+/* Progress bars */
+ProgressBar {
+    height: 1;
+}
+
+ProgressBar > .bar--bar {
+    color: $success;
+}
+
+ProgressBar > .bar--complete {
+    color: $success;
+}
+
+ProgressBar > .bar--indeterminate {
+    color: $warning;
+}
+
+/* Footer */
+Footer {
+    background: $panel;
+}
+
+Footer .footer--highlight {
+    color: $accent;
+}

@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""
+kmorch - AI Orchestrator Monitoring Dashboard
+
+Real-time monitoring for:
+- Active CLI workers
+- Task queue status
+- Token usage
+- Memory/RAG statistics
+- GPU utilization
+"""
+
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from orchestrator_viewer.app import OrchestratorViewerApp
+
+
+def main():
+    """Entry point for kmorch command."""
+    app = OrchestratorViewerApp()
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        print("\nOrchestrator viewer stopped.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
