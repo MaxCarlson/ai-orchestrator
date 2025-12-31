@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+.venv
+venv
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Task queue (will be bind mounted)
+task_queue/
+
+# Logs (will be bind mounted)
+logs/
+
+# Tests
+tests/
+*.test.py
+
+# Environment
+.env
+.env.*
+!.env.example

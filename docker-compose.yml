@@ -25,8 +25,8 @@ services:
   # AI Orchestrator - Task dispatcher and coordinator
   orchestrator:
     build:
-      context: ./docker/orchestrator
-      dockerfile: Dockerfile
+      context: .  # Build from repo root to access shared/
+      dockerfile: docker/orchestrator/Dockerfile
     container_name: km-orchestrator
     restart: unless-stopped
     environment:
@@ -41,6 +41,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       WORKER_THREADS: ${WORKER_THREADS:-4}
       TASK_POLL_INTERVAL: ${TASK_POLL_INTERVAL:-5}
+      TASK_QUEUE_PATH: /app/task_queue
 
       # LLM Router config (for RTX 5090 models)
       LLAMA_CPP_HOST: ${LLAMA_CPP_HOST:-host.docker.internal}
@@ -48,8 +49,8 @@ services:
     ports:
       - "${ORCHESTRATOR_PORT:-8000}:8000"
     volumes:
-      # Task queue directory (shared with host CLIs)
-      - task_queue:/app/task_queue
+      # Task queue directory (BIND MOUNT - shared with host)
+      - ./task_queue:/app/task_queue
       # Logs directory
       - ./logs:/app/logs
       # Config directory
@@ -86,8 +87,6 @@ volumes:
   postgres_data:
     external: true
     name: docker_postgres_data  # Use existing volume from scripts repo
-  task_queue:
-    driver: local
 
 networks:
   km-network:
