@@ -2,6 +2,38 @@
 
 A distributed system for orchestrating AI agents, managing tasks, and coordinating between human users and multiple LLMs/CLIs.
 
+> **📖 Documentation:** This README covers daily operations. See [PLAN.md](PLAN.md) for roadmap and [PROGRESS.md](PROGRESS.md) for current status.
+
+## Quick Reference
+
+```bash
+# Start orchestrator
+cd ~/projects/ai-orchestrator && docker compose up -d
+
+# Watch logs
+docker compose logs -f orchestrator
+
+# Stop orchestrator
+docker compose down
+
+# Restart after code changes
+docker compose build orchestrator && docker compose up -d orchestrator
+
+# Check status
+docker compose ps
+curl http://localhost:8000/health
+
+# View task queue
+ls -la ~/projects/ai-orchestrator/task_queue/*/
+```
+
+**End-to-End Usage:**
+1. Start orchestrator: `cd ~/projects/ai-orchestrator && docker compose up -d`
+2. Open kmtui: `kmtui` (in another terminal)
+3. Select a task and press `Ctrl+A` to assign to AI
+4. Watch orchestrator logs: `docker compose logs -f orchestrator`
+5. Check results: `cat task_queue/results/<task-id>/output.txt`
+
 ## Architecture Overview
 
 ```
@@ -118,41 +150,29 @@ Both kmtui and orchestrator receive update
 UI refreshes, orchestrator logs completion
 ```
 
-## Setup Instructions
+## Quick Start
 
 ### Prerequisites
 - Docker and Docker Compose
 - Python 3.11+ (for host tools)
 - PostgreSQL client (psql)
-- knowledge_manager installed from scripts repo
+- knowledge_manager installed from scripts repo (`kmtui` command)
 
-### 1. Clone and Configure
+### Initial Setup (One-time)
 
 ```bash
-cd /home/mcarls/projects/ai-orchestrator
+# 1. Navigate to repo
+cd ~/projects/ai-orchestrator
+
+# 2. Create environment file
 cp docker/.env.example docker/.env
 nano docker/.env  # Set POSTGRES_PASSWORD
-```
 
-### 2. Start Services
+# 3. Create Docker volume for PostgreSQL data (if not exists)
+docker volume create docker_postgres_data
 
-```bash
-# Start PostgreSQL and Orchestrator
-docker compose up -d
-
-# View logs
-docker compose logs -f orchestrator
-
-# Check health
-curl http://localhost:8000/health
-```
-
-### 3. Configure knowledge_manager
-
-The `kmtui` command from scripts repo needs to connect to PostgreSQL instead of SQLite:
-
-```bash
-# Set environment variables
+# 4. Configure kmtui environment variables
+# Add to ~/.zshrc or ~/.bashrc:
 export KM_DB_TYPE=postgresql
 export KM_POSTGRES_HOST=localhost
 export KM_POSTGRES_PORT=5432
@@ -160,16 +180,135 @@ export KM_POSTGRES_DB=knowledge_manager
 export KM_POSTGRES_USER=km_user
 export KM_POSTGRES_PASSWORD=<your_password>
 
-# Or add to ~/.zshrc / ~/.bashrc
+# 5. Start services for first time
+docker compose up -d
+
+# 6. Verify everything works
+docker compose ps  # Should show postgres and orchestrator as "running"
+curl http://localhost:8000/health  # Should return {"status":"healthy"}
 ```
 
-### 4. Run Migration (if needed)
+## Daily Operations
+
+### Starting the Orchestrator
 
 ```bash
-# If migrating from existing SQLite database
-cd docker
-pgloader migrate.load
+# Start all services (PostgreSQL + Orchestrator)
+cd ~/projects/ai-orchestrator
+docker compose up -d
+
+# Or start just orchestrator (if PostgreSQL already running)
+docker compose up -d orchestrator
 ```
+
+**What happens:**
+- PostgreSQL starts and waits for connections
+- Orchestrator waits for PostgreSQL health check to pass
+- Orchestrator connects to database and starts polling task queue
+- API becomes available at http://localhost:8000
+
+### Watching the Orchestrator
+
+```bash
+# View live logs (follows output, Ctrl+C to exit)
+cd ~/projects/ai-orchestrator
+docker compose logs -f orchestrator
+
+# View last 50 lines of logs
+docker compose logs --tail=50 orchestrator
+
+# View logs from all services
+docker compose logs -f
+
+# Check service status
+docker compose ps
+```
+
+**What you'll see in logs:**
+```
+km-orchestrator  | Starting AI Orchestrator...
+km-orchestrator  | Database connection pool created
+km-orchestrator  | Task queue initialized at /app/task_queue
+km-orchestrator  | Task processor started - polling task queue...
+km-orchestrator  | Application startup complete.
+```
+
+### Stopping the Orchestrator
+
+```bash
+# Stop all services
+cd ~/projects/ai-orchestrator
+docker compose down
+
+# Stop but keep containers (faster restart)
+docker compose stop
+
+# Stop just orchestrator (keep PostgreSQL running)
+docker compose stop orchestrator
+```
+
+### Restarting After Code Changes
+
+```bash
+cd ~/projects/ai-orchestrator
+
+# 1. Rebuild orchestrator container
+docker compose build orchestrator
+
+# 2. Recreate and restart
+docker compose up -d orchestrator
+
+# 3. Watch logs to verify
+docker compose logs -f orchestrator
+```
+
+### Using the System (End-to-End Workflow)
+
+**Step 1: Start the orchestrator**
+```bash
+cd ~/projects/ai-orchestrator
+docker compose up -d
+docker compose logs -f orchestrator  # Keep this running in a terminal
+```
+
+**Step 2: Open kmtui**
+```bash
+# In another terminal
+kmtui
+```
+
+**Step 3: Create or select a task**
+- Navigate to Tasks screen in kmtui
+- Select an existing task or create a new one
+
+**Step 4: Assign task to AI**
+- Press `Ctrl+A` while task is selected
+- kmtui writes task to `task_queue/queued/`
+
+**Step 5: Watch orchestrator process the task**
+In the orchestrator logs terminal, you'll see:
+```
+Found 1 queued tasks
+Assigning task abc123 to claude
+Spawned claude worker (PID: 1234)
+```
+
+**Step 6: Check task progress**
+```bash
+# View task queue directories
+ls -la ~/projects/ai-orchestrator/task_queue/*/
+
+# Task moves through:
+# queued/ → assigned/ → in_progress/ → completed/ or failed/
+
+# View task results
+cat ~/projects/ai-orchestrator/task_queue/results/<task-id>/output.txt
+```
+
+**Step 7: Task completes**
+- Worker updates task status in PostgreSQL
+- kmtui shows task as completed
+- Results available in `task_queue/results/`
 
 ## Development
 
@@ -251,62 +390,179 @@ kmtui  # Launches TUI, connects to PostgreSQL
 
 **Key Point**: The `kmtui` CLI is the **human interface** to the database. The orchestrator is the **AI interface** to the database. Both use PostgreSQL as the single source of truth.
 
-## Next Steps
+---
 
-### Phase 4: DB Adapter Updates
-- [ ] Update `knowledge_manager/db.py` for PostgreSQL support
-- [ ] Add environment variable detection (SQLite vs PostgreSQL)
-- [ ] Test kmtui with PostgreSQL backend
+## Project Documentation
 
-### Phase 5: CLI Integrations
-- [ ] Create wrappers for claude, codex, gemini CLIs
-- [ ] Implement filesystem task queue
-- [ ] Add result parsing and status updates
+- **[PLAN.md](PLAN.md)** - Implementation roadmap and future phases
+- **[PROGRESS.md](PROGRESS.md)** - Completed work and current status
+- **[docs/CONTAINERIZATION_STRATEGY.md](docs/CONTAINERIZATION_STRATEGY.md)** - Architecture decisions
+- **[docs/TASK_QUEUE_DESIGN.md](docs/TASK_QUEUE_DESIGN.md)** - Task queue system design
+- **[docs/ORCHESTRATOR_VIEWER_DESIGN.md](docs/ORCHESTRATOR_VIEWER_DESIGN.md)** - Future TUI design
 
-### Phase 6: LLM Router
-- [ ] llama.cpp client implementation
-- [ ] Model loading and unloading logic
-- [ ] Request routing based on task requirements
-
-### Phase 7: Vector Database
-- [ ] Set up vector store for project context
-- [ ] RAG pipeline for task augmentation
-- [ ] Context management system
+---
 
 ## Troubleshooting
 
-### PostgreSQL Connection Issues
-```bash
-# Check PostgreSQL is running
-docker compose ps postgres
+### Orchestrator Stuck in Loop ("Found X pending tasks" repeating)
 
-# View PostgreSQL logs
+**Problem:** Orchestrator finds tasks but doesn't process them
+
+**Solution:**
+```bash
+# Check task queue directory structure
+ls -la ~/projects/ai-orchestrator/task_queue/
+
+# Should see: queued/, assigned/, in_progress/, completed/, failed/, results/
+# If you see weird directory names like {queued,assigned,...}, fix it:
+
+cd ~/projects/ai-orchestrator/task_queue
+rm -rf '{queued,assigned,in_progress,completed,failed,results}'
+mkdir -p queued assigned in_progress completed failed results
+
+# Rebuild and restart orchestrator
+cd ~/projects/ai-orchestrator
+docker compose build orchestrator
+docker compose up -d orchestrator
+```
+
+### PostgreSQL Connection Issues
+
+```bash
+# 1. Check PostgreSQL is running
+docker compose ps postgres
+# Should show: "Up" and "healthy"
+
+# 2. View PostgreSQL logs
 docker compose logs postgres
 
-# Test connection
+# 3. Test connection from inside container
 docker compose exec postgres psql -U km_user -d knowledge_manager -c "SELECT 1"
+
+# 4. Test connection from host
+psql -h localhost -p 5432 -U km_user -d knowledge_manager
+
+# 5. Check environment variables
+docker compose exec orchestrator env | grep POSTGRES
 ```
+
+**Common fixes:**
+- Ensure `POSTGRES_PASSWORD` is set in `docker/.env`
+- Check PostgreSQL port 5432 is not already in use: `lsof -i :5432`
+- Verify Docker volume exists: `docker volume ls | grep postgres_data`
 
 ### Orchestrator Not Starting
+
 ```bash
-# Check environment variables
-docker compose exec orchestrator env | grep POSTGRES
+# 1. View detailed logs
+docker compose logs --tail=100 orchestrator
 
-# View orchestrator logs
-docker compose logs -f orchestrator
+# 2. Check for Python errors
+docker compose logs orchestrator | grep -i error
 
-# Restart services
-docker compose restart orchestrator
+# 3. Verify orchestrator can reach PostgreSQL
+docker compose exec orchestrator ping postgres
+
+# 4. Check if orchestrator has access to task_queue
+docker compose exec orchestrator ls -la /app/task_queue/
 ```
 
-### kmtui Not Connecting
-```bash
-# Verify environment variables
-echo $KM_DB_TYPE
-echo $KM_POSTGRES_HOST
+**Common issues:**
+- `ModuleNotFoundError`: Rebuild container (`docker compose build orchestrator`)
+- Database connection failed: Check PostgreSQL is healthy first
+- Task queue not found: Check bind mount in docker-compose.yml
 
-# Test PostgreSQL from host
+### kmtui Not Connecting to PostgreSQL
+
+```bash
+# 1. Verify environment variables are set
+echo $KM_DB_TYPE          # Should be: postgresql
+echo $KM_POSTGRES_HOST    # Should be: localhost
+echo $KM_POSTGRES_PORT    # Should be: 5432
+
+# 2. Test PostgreSQL connection from host
 psql -h localhost -p 5432 -U km_user -d knowledge_manager
+
+# 3. Check if variables are in your shell config
+grep KM_POSTGRES ~/.zshrc   # or ~/.bashrc
+```
+
+**Solution:** Add to `~/.zshrc` or `~/.bashrc`:
+```bash
+export KM_DB_TYPE=postgresql
+export KM_POSTGRES_HOST=localhost
+export KM_POSTGRES_PORT=5432
+export KM_POSTGRES_DB=knowledge_manager
+export KM_POSTGRES_USER=km_user
+export KM_POSTGRES_PASSWORD=<your_password>
+```
+
+Then reload: `source ~/.zshrc`
+
+### Tasks Not Moving Through Queue
+
+```bash
+# 1. Check task queue permissions
+ls -la ~/projects/ai-orchestrator/task_queue/
+
+# 2. Verify orchestrator is polling
+docker compose logs --tail=20 orchestrator | grep "Task processor"
+
+# 3. Manually check for tasks
+ls ~/projects/ai-orchestrator/task_queue/queued/
+
+# 4. Check worker script exists
+ls -la ~/projects/ai-orchestrator/cli_integrations/claude_worker.sh
+```
+
+**Common issues:**
+- Task files have wrong permissions: `chmod 644 task_queue/queued/*.json`
+- Worker script not executable: `chmod +x cli_integrations/claude_worker.sh`
+- Orchestrator polling stopped: Restart orchestrator
+
+### Clean Slate (Nuclear Option)
+
+If everything is broken and you want to start fresh:
+
+```bash
+cd ~/projects/ai-orchestrator
+
+# 1. Stop all services
+docker compose down
+
+# 2. Remove containers and volumes (WARNING: deletes all data!)
+docker compose down -v
+
+# 3. Clean task queue
+rm -rf task_queue/*
+mkdir -p task_queue/{queued,assigned,in_progress,completed,failed,results}
+
+# 4. Recreate PostgreSQL volume
+docker volume rm docker_postgres_data
+docker volume create docker_postgres_data
+
+# 5. Start fresh
+docker compose up -d
+
+# 6. Watch initialization
+docker compose logs -f
+```
+
+### Getting Help
+
+```bash
+# Check container resource usage
+docker stats
+
+# Inspect orchestrator container
+docker compose exec orchestrator bash
+
+# View full docker-compose configuration
+docker compose config
+
+# Check Docker network
+docker network ls | grep km-network
+docker network inspect km-network
 ```
 
 ## License
