@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy shared modules (task queue)
 COPY shared/ /app/shared/
 
+# Copy memory subsystem
+COPY memory/ /app/memory/
+
 # Copy orchestrator code
 COPY docker/orchestrator/*.py /app/
 

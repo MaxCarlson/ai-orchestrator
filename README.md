@@ -7,6 +7,9 @@ A distributed system for orchestrating AI agents, managing tasks, and coordinati
 ## Quick Reference
 
 ```bash
+# Build + start everything with one command
+./build_all.sh
+
 # Start orchestrator
 cd ~/projects/ai-orchestrator && docker compose up -d
 
