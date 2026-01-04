@@ -7,7 +7,7 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, Literal
 
 import asyncpg
 import numpy as np
@@ -85,6 +85,15 @@ AVAILABLE_MODELS = [
     },
 ]
 
+TRACKING_STATUSES = {
+    "not_tracked",
+    "pending",
+    "indexing",
+    "ready",
+    "stale",
+    "error",
+}
+
 
 async def get_db_pool() -> asyncpg.Pool:
     """Get or create database connection pool"""
@@ -117,6 +126,28 @@ async def ensure_settings_schema(conn: asyncpg.Connection) -> None:
         CREATE TABLE IF NOT EXISTS orchestrator_settings (
             key TEXT PRIMARY KEY,
             value JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+
+
+async def ensure_project_tracking_schema(conn: asyncpg.Connection) -> None:
+    """Create table to track project memory/embedding status."""
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_tracking (
+            project_id UUID PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            is_tracked BOOLEAN NOT NULL DEFAULT FALSE,
+            repo_path TEXT,
+            embedding_status TEXT NOT NULL DEFAULT 'not_tracked',
+            embedding_last_indexed TIMESTAMPTZ,
+            preferred_model_id TEXT,
+            embedding_model_id TEXT,
+            gpu_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            gpu_device TEXT,
+            notes TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """
@@ -182,6 +213,7 @@ async def bootstrap_memory_and_settings() -> None:
     async with pool.acquire() as conn:
         await initialize_schema(conn)
         await ensure_settings_schema(conn)
+        await ensure_project_tracking_schema(conn)
         # Ensure a default model record exists
         current_model = await get_orchestrator_setting(conn, "current_model")
         if not current_model:
@@ -190,6 +222,158 @@ async def bootstrap_memory_and_settings() -> None:
                 "current_model",
                 {"model_id": AVAILABLE_MODELS[0]["id"]},
             )
+
+
+def normalise_tracking_record(project_id: str, row: Optional[asyncpg.Record]) -> dict:
+    """Build a serialisable tracking record."""
+    base = {
+        "project_id": str(project_id),
+        "is_tracked": False,
+        "repo_path": None,
+        "embedding_status": "not_tracked",
+        "embedding_last_indexed": None,
+        "preferred_model_id": None,
+        "embedding_model_id": None,
+        "gpu_enabled": False,
+        "gpu_device": None,
+        "notes": None,
+    }
+    if row:
+        data = dict(row)
+        data["project_id"] = str(project_id)
+        return {**base, **data}
+    return base
+
+
+async def fetch_project_tracking(conn: asyncpg.Connection, project_id: str) -> dict:
+    """Return tracking metadata for a project."""
+    row = await conn.fetchrow(
+        """
+        SELECT
+            is_tracked,
+            repo_path,
+            embedding_status,
+            embedding_last_indexed,
+            preferred_model_id,
+            embedding_model_id,
+            gpu_enabled,
+            gpu_device,
+            notes
+        FROM project_tracking
+        WHERE project_id = $1
+        """,
+        project_id,
+    )
+    return normalise_tracking_record(project_id, row)
+
+
+def validate_model_choice(model_id: Optional[str]) -> Optional[str]:
+    """Ensure requested model exists."""
+    if not model_id:
+        return None
+    model = resolve_model(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail=f"Unknown model id '{model_id}'")
+    return model["id"]
+
+
+async def ensure_project_exists(conn: asyncpg.Connection, project_id: str) -> None:
+    """Raise if requested project does not exist."""
+    exists = await conn.fetchval("SELECT 1 FROM projects WHERE id = $1", project_id)
+    if not exists:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
+async def upsert_project_tracking(
+    conn: asyncpg.Connection,
+    project_id: str,
+    data: "ProjectTrackingUpdate",
+) -> dict:
+    """Merge tracking metadata updates and persist."""
+    await ensure_project_exists(conn, project_id)
+    current = await fetch_project_tracking(conn, project_id)
+
+    repo_path = data.repo_path if data.repo_path is not None else current["repo_path"]
+    if repo_path:
+        repo_path = repo_path.strip()
+
+    is_tracked = data.is_tracked if data.is_tracked is not None else current["is_tracked"]
+
+    embedding_status = data.embedding_status or current["embedding_status"]
+    if embedding_status not in TRACKING_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid embedding status '{embedding_status}'",
+        )
+
+    if is_tracked and not repo_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Tracked projects must specify a repository path",
+        )
+
+    if not is_tracked:
+        embedding_status = "not_tracked"
+
+    preferred_model_id = validate_model_choice(
+        data.preferred_model_id or current["preferred_model_id"]
+    )
+    embedding_model_id = validate_model_choice(
+        data.embedding_model_id or current["embedding_model_id"]
+    )
+
+    gpu_enabled = (
+        data.gpu_enabled if data.gpu_enabled is not None else current["gpu_enabled"]
+    )
+    gpu_device = data.gpu_device if data.gpu_device is not None else current["gpu_device"]
+    notes = data.notes if data.notes is not None else current["notes"]
+
+    await conn.execute(
+        """
+        INSERT INTO project_tracking (
+            project_id,
+            is_tracked,
+            repo_path,
+            embedding_status,
+            embedding_last_indexed,
+            preferred_model_id,
+            embedding_model_id,
+            gpu_enabled,
+            gpu_device,
+            notes,
+            updated_at
+        ) VALUES ($1, $2, $3, $4, CASE WHEN $4 = 'ready' THEN NOW() ELSE $5 END,
+                  $6, $7, $8, $9, $10, NOW())
+        ON CONFLICT (project_id)
+        DO UPDATE SET
+            is_tracked = EXCLUDED.is_tracked,
+            repo_path = EXCLUDED.repo_path,
+            embedding_status = EXCLUDED.embedding_status,
+            embedding_last_indexed = CASE
+                WHEN EXCLUDED.embedding_status = 'ready' THEN NOW()
+                ELSE project_tracking.embedding_last_indexed
+            END,
+            preferred_model_id = EXCLUDED.preferred_model_id,
+            embedding_model_id = EXCLUDED.embedding_model_id,
+            gpu_enabled = EXCLUDED.gpu_enabled,
+            gpu_device = EXCLUDED.gpu_device,
+            notes = EXCLUDED.notes,
+            updated_at = NOW()
+        """,
+        project_id,
+        is_tracked,
+        repo_path,
+        embedding_status,
+        current["embedding_last_indexed"],
+        preferred_model_id,
+        embedding_model_id,
+        gpu_enabled,
+        gpu_device,
+        notes,
+    )
+
+    return await fetch_project_tracking(conn, project_id)
+
 
 
 # LISTEN/NOTIFY handler
@@ -222,7 +406,7 @@ async def listen_for_task_updates():
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from shared.task_queue import TaskQueue, TaskStatus
+from shared.task_queue import TaskPriority, TaskQueue, TaskStatus
 import subprocess
 
 
@@ -385,6 +569,23 @@ class ModelSelectionRequest(BaseModel):
     model_id: str
 
 
+class ProjectTrackingUpdate(BaseModel):
+    repo_path: Optional[str] = None
+    is_tracked: Optional[bool] = None
+    embedding_status: Optional[str] = None
+    preferred_model_id: Optional[str] = None
+    embedding_model_id: Optional[str] = None
+    gpu_enabled: Optional[bool] = None
+    gpu_device: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class EmbeddingJobRequest(BaseModel):
+    scope: Literal["code", "text", "both"] = "both"
+    model_id: Optional[str] = None
+    force_reindex: bool = False
+
+
 # API Endpoints
 @app.get("/")
 async def root():
@@ -473,6 +674,132 @@ async def select_model(payload: ModelSelectionRequest):
             {"model_id": model["id"]},
         )
     return {"status": "updated", "model": model}
+
+
+@app.get("/projects/tracking")
+async def list_project_tracking():
+    """Return tracking metadata for all projects."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                p.id AS project_id,
+                p.name,
+                COALESCE(pt.is_tracked, FALSE) AS is_tracked,
+                pt.repo_path,
+                COALESCE(pt.embedding_status, 'not_tracked') AS embedding_status,
+                pt.embedding_last_indexed,
+                pt.preferred_model_id,
+                pt.embedding_model_id,
+                COALESCE(pt.gpu_enabled, FALSE) AS gpu_enabled,
+                pt.gpu_device,
+                pt.notes
+            FROM projects p
+            LEFT JOIN project_tracking pt ON pt.project_id = p.id
+            ORDER BY p.name
+            """
+        )
+    results = []
+    for row in rows:
+        data = dict(row)
+        data["project_id"] = str(data["project_id"])
+        results.append(data)
+    return results
+
+
+@app.get("/projects/{project_id}/tracking")
+async def get_project_tracking(project_id: str):
+    """Detailed tracking info for a project."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await ensure_project_exists(conn, project_id)
+        record = await fetch_project_tracking(conn, project_id)
+    return record
+
+
+@app.post("/projects/{project_id}/tracking")
+async def update_project_tracking(project_id: str, payload: ProjectTrackingUpdate):
+    """Create or update project tracking metadata."""
+    if payload.embedding_status and payload.embedding_status not in TRACKING_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid embedding status '{payload.embedding_status}'",
+        )
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        updated = await upsert_project_tracking(conn, project_id, payload)
+    return updated
+
+
+@app.post("/projects/{project_id}/tracking/index")
+async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
+    """Create a task to (re)index a project's repository."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await ensure_project_exists(conn, project_id)
+        tracking = await fetch_project_tracking(conn, project_id)
+        project = await conn.fetchrow(
+            "SELECT name FROM projects WHERE id = $1",
+            project_id,
+        )
+
+        if not tracking["is_tracked"] or not tracking["repo_path"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Project must be tracked with a repository path before indexing",
+            )
+
+        model_id = (
+            validate_model_choice(payload.model_id)
+            or tracking["embedding_model_id"]
+            or tracking["preferred_model_id"]
+        )
+        if model_id is None:
+            model_id = AVAILABLE_MODELS[0]["id"]
+
+        status_payload = ProjectTrackingUpdate(
+            embedding_status="indexing",
+            embedding_model_id=model_id,
+        )
+        await upsert_project_tracking(conn, project_id, status_payload)
+
+        project_name = project["name"]
+        repo_path = tracking["repo_path"]
+
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    description = (
+        "Run repository embedding for the selected project.\n"
+        f"Project: {project_name} ({project_id})\n"
+        f"Repository path: {repo_path}\n"
+        f"Scope: {payload.scope}\n"
+        "Command hint:\n"
+        "python memory/embed_repo.py "
+        f"--repo-path \"{repo_path}\" "
+        f"--project-id {project_id}"
+    )
+    context = {
+        "job_type": "index_repo",
+        "scope": payload.scope,
+        "repo_path": repo_path,
+        "model_id": model_id,
+        "force_reindex": payload.force_reindex,
+    }
+
+    task_id = task_queue.create_task(
+        project_id=project_id,
+        task_title=f"Embed repository - {project_name}",
+        description=description,
+        priority=TaskPriority.HIGH,
+        cli_preference="claude",
+        context=context,
+    )
+
+    return {
+        "status": "queued",
+        "task_id": task_id,
+        "embedding_status": "indexing",
+    }
 
 
 @app.get("/stats")
