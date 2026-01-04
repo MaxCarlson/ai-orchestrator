@@ -24,11 +24,31 @@ with cosine distance for efficient nearest‑neighbour queries. See
 
 # SQL statements to create tables and indexes
 
+CREATE_SYSTEM_TABLE = """
+CREATE TABLE IF NOT EXISTS systems (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    modified_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_systems_name ON systems ((LOWER(name)));
+"""
+
+UPSERT_DEFAULT_SYSTEM = """
+INSERT INTO systems (name, description)
+VALUES ('global', 'Default global orchestration scope')
+ON CONFLICT (name) DO UPDATE
+SET description = EXCLUDED.description,
+    modified_at = NOW();
+"""
+
 CREATE_MEMORY_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_items (
     memory_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     content TEXT NOT NULL,
-    embedding vector NOT NULL,
+    embedding vector(768) NOT NULL,
     project_id UUID NULL REFERENCES projects(id) ON DELETE CASCADE,
     task_id UUID NULL REFERENCES tasks(id) ON DELETE CASCADE,
     system_id UUID NULL REFERENCES systems(id) ON DELETE CASCADE,
@@ -68,4 +88,25 @@ CREATE_EMBEDDING_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_memory_items_embedding
 ON memory_items USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
+"""
+
+ALTER_MEMORY_EMBEDDING_DIMENSION = """
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'memory_items'
+          AND column_name = 'embedding'
+          AND udt_name = 'vector'
+    ) THEN
+        BEGIN
+            EXECUTE 'ALTER TABLE memory_items ALTER COLUMN embedding TYPE vector(768)';
+        EXCEPTION
+            WHEN others THEN
+                -- Ignore errors if column already has dimension or table absent.
+                NULL;
+        END;
+    END IF;
+END $$;
 """

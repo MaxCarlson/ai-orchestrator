@@ -83,9 +83,12 @@ async def initialize_schema(conn: asyncpg.Connection) -> None:
     await conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
     await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
     # Create tables
+    await conn.execute(models.CREATE_SYSTEM_TABLE)
     await conn.execute(models.CREATE_MEMORY_TABLE)
     await conn.execute(models.CREATE_CATEGORY_TABLE)
     await conn.execute(models.CREATE_MEMORY_CATEGORY_TABLE)
+    await conn.execute(models.ALTER_MEMORY_EMBEDDING_DIMENSION)
+    await conn.execute(models.UPSERT_DEFAULT_SYSTEM)
     # Create embedding index
     await conn.execute(models.CREATE_EMBEDDING_INDEX)
 

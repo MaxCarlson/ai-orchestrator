@@ -140,6 +140,7 @@ async def ensure_project_tracking_schema(conn: asyncpg.Connection) -> None:
             project_id UUID PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
             is_tracked BOOLEAN NOT NULL DEFAULT FALSE,
             repo_path TEXT,
+            repo_paths TEXT,
             embedding_status TEXT NOT NULL DEFAULT 'not_tracked',
             embedding_last_indexed TIMESTAMPTZ,
             preferred_model_id TEXT,
@@ -151,6 +152,9 @@ async def ensure_project_tracking_schema(conn: asyncpg.Connection) -> None:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS repo_paths TEXT;"
     )
 
 
@@ -230,6 +234,7 @@ def normalise_tracking_record(project_id: str, row: Optional[asyncpg.Record]) ->
         "project_id": str(project_id),
         "is_tracked": False,
         "repo_path": None,
+        "repo_paths": [],
         "embedding_status": "not_tracked",
         "embedding_last_indexed": None,
         "preferred_model_id": None,
@@ -240,6 +245,13 @@ def normalise_tracking_record(project_id: str, row: Optional[asyncpg.Record]) ->
     }
     if row:
         data = dict(row)
+        repo_paths_raw = data.pop("repo_paths", None)
+        repo_paths = []
+        if repo_paths_raw:
+            repo_paths = [path.strip() for path in repo_paths_raw.splitlines() if path and path.strip()]
+        data["repo_paths"] = repo_paths
+        if not data.get("repo_path") and repo_paths:
+            data["repo_path"] = repo_paths[0]
         data["project_id"] = str(project_id)
         return {**base, **data}
     return base
@@ -252,6 +264,7 @@ async def fetch_project_tracking(conn: asyncpg.Connection, project_id: str) -> d
         SELECT
             is_tracked,
             repo_path,
+            repo_paths,
             embedding_status,
             embedding_last_indexed,
             preferred_model_id,
@@ -297,6 +310,18 @@ async def upsert_project_tracking(
     if repo_path:
         repo_path = repo_path.strip()
 
+    if data.repo_paths is not None:
+        repo_paths_list = [path.strip() for path in data.repo_paths if path and path.strip()]
+    else:
+        repo_paths_list = list(current.get("repo_paths") or [])
+    # Ensure repo_path is in sync with list
+    if repo_path:
+        repo_paths_list = [repo_path] + [p for p in repo_paths_list if p != repo_path]
+    elif repo_paths_list:
+        repo_path = repo_paths_list[0]
+
+    repo_paths_text = "\n".join(repo_paths_list) if repo_paths_list else None
+
     is_tracked = data.is_tracked if data.is_tracked is not None else current["is_tracked"]
 
     embedding_status = data.embedding_status or current["embedding_status"]
@@ -309,7 +334,7 @@ async def upsert_project_tracking(
     if is_tracked and not repo_path:
         raise HTTPException(
             status_code=400,
-            detail="Tracked projects must specify a repository path",
+            detail="Tracked projects must specify at least one repository path",
         )
 
     if not is_tracked:
@@ -334,6 +359,7 @@ async def upsert_project_tracking(
             project_id,
             is_tracked,
             repo_path,
+            repo_paths,
             embedding_status,
             embedding_last_indexed,
             preferred_model_id,
@@ -342,12 +368,25 @@ async def upsert_project_tracking(
             gpu_device,
             notes,
             updated_at
-        ) VALUES ($1, $2, $3, $4, CASE WHEN $4 = 'ready' THEN NOW() ELSE $5 END,
-                  $6, $7, $8, $9, $10, NOW())
+        ) VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            CASE WHEN $5 = 'ready' THEN NOW() ELSE $6 END,
+            $7,
+            $8,
+            $9,
+            $10,
+            $11,
+            NOW()
+        )
         ON CONFLICT (project_id)
         DO UPDATE SET
             is_tracked = EXCLUDED.is_tracked,
             repo_path = EXCLUDED.repo_path,
+            repo_paths = EXCLUDED.repo_paths,
             embedding_status = EXCLUDED.embedding_status,
             embedding_last_indexed = CASE
                 WHEN EXCLUDED.embedding_status = 'ready' THEN NOW()
@@ -363,6 +402,7 @@ async def upsert_project_tracking(
         project_id,
         is_tracked,
         repo_path,
+        repo_paths_text,
         embedding_status,
         current["embedding_last_indexed"],
         preferred_model_id,
@@ -416,10 +456,28 @@ async def process_pending_tasks():
     task_queue = TaskQueue(queue_path=settings.task_queue_path)
     logger.info("Task processor started - polling task queue...")
 
+    def get_project_cli_locks() -> dict[str, str]:
+        """Return mapping of project_id -> cli (e.g., 'claude')."""
+        locks: dict[str, str] = {}
+        for status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+            active_tasks = task_queue.list_tasks(status)
+            for task in active_tasks:
+                project_id = task.get("project_id")
+                if not project_id:
+                    continue
+                cli_name = task.get("cli_preference")
+                assigned_to = task.get("assigned_to", "")
+                if assigned_to and assigned_to.endswith("-worker"):
+                    cli_name = assigned_to.rsplit("-worker", 1)[0]
+                if cli_name:
+                    locks[project_id] = cli_name
+        return locks
+
     while True:
         try:
             # Get queued tasks
             queued_tasks = task_queue.list_tasks(TaskStatus.QUEUED, limit=10)
+            project_locks = get_project_cli_locks()
 
             if queued_tasks:
                 logger.info(f"Found {len(queued_tasks)} queued tasks")
@@ -427,8 +485,16 @@ async def process_pending_tasks():
                 for task_data in queued_tasks:
                     task_id = task_data['task_id']
                     cli_preference = task_data.get('cli_preference', 'claude')
+                    project_id = task_data.get('project_id')
+
+                    if project_id and project_locks.get(project_id):
+                        cli_preference = project_locks[project_id]
+                    elif project_id and cli_preference:
+                        project_locks[project_id] = cli_preference
 
                     logger.info(f"Assigning task {task_id[:8]} to {cli_preference}")
+
+                    task_data['cli_preference'] = cli_preference
 
                     # Assign task
                     success = task_queue.assign_task(
@@ -571,6 +637,7 @@ class ModelSelectionRequest(BaseModel):
 
 class ProjectTrackingUpdate(BaseModel):
     repo_path: Optional[str] = None
+    repo_paths: Optional[List[str]] = None
     is_tracked: Optional[bool] = None
     embedding_status: Optional[str] = None
     preferred_model_id: Optional[str] = None
@@ -688,6 +755,7 @@ async def list_project_tracking():
                 p.name,
                 COALESCE(pt.is_tracked, FALSE) AS is_tracked,
                 pt.repo_path,
+                pt.repo_paths,
                 COALESCE(pt.embedding_status, 'not_tracked') AS embedding_status,
                 pt.embedding_last_indexed,
                 pt.preferred_model_id,
@@ -704,6 +772,14 @@ async def list_project_tracking():
     for row in rows:
         data = dict(row)
         data["project_id"] = str(data["project_id"])
+        repo_paths_raw = data.get("repo_paths")
+        if repo_paths_raw:
+            paths = [path.strip() for path in repo_paths_raw.splitlines() if path and path.strip()]
+        else:
+            paths = []
+        data["repo_paths"] = paths
+        if not data.get("repo_path") and paths:
+            data["repo_path"] = paths[0]
         results.append(data)
     return results
 
@@ -744,7 +820,11 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
             project_id,
         )
 
-        if not tracking["is_tracked"] or not tracking["repo_path"]:
+        repo_paths = tracking.get("repo_paths") or []
+        if tracking.get("repo_path") and not repo_paths:
+            repo_paths = [tracking["repo_path"]]
+
+        if not tracking["is_tracked"] or not repo_paths:
             raise HTTPException(
                 status_code=400,
                 detail="Project must be tracked with a repository path before indexing",
@@ -765,23 +845,27 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
         await upsert_project_tracking(conn, project_id, status_payload)
 
         project_name = project["name"]
-        repo_path = tracking["repo_path"]
+        repo_path = repo_paths[0]
 
     task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    commands = "\n".join(
+        f"python memory/embed_repo.py --repo-path \"{path}\" --project-id {project_id}"
+        for path in repo_paths
+    )
+    repo_paths_display = "\n".join(f"- {path}" for path in repo_paths)
     description = (
         "Run repository embedding for the selected project.\n"
         f"Project: {project_name} ({project_id})\n"
-        f"Repository path: {repo_path}\n"
+        f"Repository paths:\n{repo_paths_display}\n"
         f"Scope: {payload.scope}\n"
         "Command hint:\n"
-        "python memory/embed_repo.py "
-        f"--repo-path \"{repo_path}\" "
-        f"--project-id {project_id}"
+        f"{commands}"
     )
     context = {
         "job_type": "index_repo",
         "scope": payload.scope,
         "repo_path": repo_path,
+        "repo_paths": repo_paths,
         "model_id": model_id,
         "force_reindex": payload.force_reindex,
     }
