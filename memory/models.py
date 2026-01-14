@@ -78,6 +78,29 @@ CREATE TABLE IF NOT EXISTS memory_categories (
 );
 """
 
+CREATE_CODE_CHUNKS_TABLE = """
+CREATE TABLE IF NOT EXISTS code_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    symbol_name TEXT NOT NULL,
+    chunk_type TEXT NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    embedding vector(768) NOT NULL,
+    embedding_model TEXT NOT NULL,
+    pagerank_score DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    language TEXT,
+    git_commit TEXT,
+    embedding_status TEXT NOT NULL DEFAULT 'ready',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (project_id, file_path, symbol_name)
+);
+"""
+
 CREATE_EMBEDDING_INDEX = """
 -- Use the ivfflat index for efficient vector search with cosine
 -- similarity. The index creation might fail if pgvector is not
@@ -87,6 +110,18 @@ CREATE_EMBEDDING_INDEX = """
 -- slower index build time).
 CREATE INDEX IF NOT EXISTS idx_memory_items_embedding
 ON memory_items USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+"""
+
+CREATE_CODE_CHUNKS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_code_chunks_project_status
+ON code_chunks (project_id, embedding_status);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_content_hash
+ON code_chunks (content_hash);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_embedding
+ON code_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 """
 

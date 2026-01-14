@@ -15,7 +15,10 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
+from memory.code_embeddings import CodeEmbedder
+from memory.code_search import search_code
 from memory.manager import MemoryManager, initialize_schema
+from memory.text_embeddings import TextEmbedder
 
 
 # Configuration
@@ -55,6 +58,8 @@ logger = logging.getLogger(__name__)
 # Database connection pool
 db_pool: asyncpg.Pool | None = None
 memory_manager = MemoryManager()
+code_embedder: CodeEmbedder | None = None
+text_embedder: TextEmbedder | None = None
 
 
 AVAILABLE_MODELS = [
@@ -83,6 +88,13 @@ AVAILABLE_MODELS = [
         "endpoint": "llama.cpp",
         "capabilities": ["code"],
     },
+    {
+        "id": "lmstudio-local",
+        "label": "LM Studio (Local Server)",
+        "provider": "local-llm",
+        "endpoint": "lmstudio",
+        "capabilities": ["chat", "code"],
+    },
 ]
 
 TRACKING_STATUSES = {
@@ -93,6 +105,9 @@ TRACKING_STATUSES = {
     "stale",
     "error",
 }
+
+CODE_CONTEXT_MAX_CHARS = 8000
+CODE_CONTEXT_SNIPPET_CHARS = 1200
 
 
 async def get_db_pool() -> asyncpg.Pool:
@@ -218,6 +233,82 @@ async def bootstrap_memory_and_settings() -> None:
         await initialize_schema(conn)
         await ensure_settings_schema(conn)
         await ensure_project_tracking_schema(conn)
+
+
+def get_code_embedder() -> CodeEmbedder:
+    """Load the code embedding model lazily for query embeddings."""
+    global code_embedder
+    if code_embedder is None:
+        code_embedder = CodeEmbedder()
+    return code_embedder
+
+
+def get_text_embedder() -> TextEmbedder:
+    """Load the text embedding model lazily for memory operations."""
+    global text_embedder
+    if text_embedder is None:
+        text_embedder = TextEmbedder()
+    return text_embedder
+
+
+def _truncate_snippet(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n... [truncated]\n"
+
+
+def _build_code_context_text(entries: list[dict]) -> str:
+    if not entries:
+        return ""
+    lines = ["", "Relevant code context:"]
+    remaining = CODE_CONTEXT_MAX_CHARS
+    for entry in entries:
+        header = f"{entry['file_path']}:{entry['start_line']}-{entry['end_line']} ({entry['symbol_name']})"
+        snippet = _truncate_snippet(entry["snippet"], CODE_CONTEXT_SNIPPET_CHARS)
+        block = f"\n{header}\n```\n{snippet}\n```"
+        if len(block) > remaining:
+            break
+        lines.append(block)
+        remaining -= len(block)
+    return "\n".join(lines) + "\n"
+
+
+async def _attach_code_context(task_data: dict) -> dict:
+    project_id = task_data.get("project_id")
+    description = task_data.get("description") or ""
+    if not project_id or not description.strip():
+        return {}
+
+    pool = await get_db_pool()
+    embedder = get_code_embedder()
+    query_embedding = embedder.embed_query(description)
+
+    async with pool.acquire() as conn:
+        results = await search_code(conn, project_id, query_embedding, top_k=8)
+
+    if not results:
+        return {}
+
+    context_entries = []
+    for row in results:
+        snippet = row["content"]
+        context_entries.append(
+            {
+                "file_path": row["file_path"],
+                "symbol_name": row["symbol_name"],
+                "chunk_type": row["chunk_type"],
+                "start_line": row["start_line"],
+                "end_line": row["end_line"],
+                "similarity": float(row["similarity"]),
+                "snippet": snippet,
+            }
+        )
+
+    context_text = _build_code_context_text(context_entries)
+    return {
+        "code_context": context_entries,
+        "description": description + context_text,
+    }
         # Ensure a default model record exists
         current_model = await get_orchestrator_setting(conn, "current_model")
         if not current_model:
@@ -496,11 +587,16 @@ async def process_pending_tasks():
 
                     task_data['cli_preference'] = cli_preference
 
+                    extra_updates = await _attach_code_context(task_data)
+                    if extra_updates:
+                        task_data.update(extra_updates)
+
                     # Assign task
                     success = task_queue.assign_task(
                         task_id,
                         assigned_to=f"{cli_preference}-worker",
-                        worker_pid=None  # Will be set by worker
+                        worker_pid=None,  # Will be set by worker
+                        extra_updates=extra_updates if extra_updates else None,
                     )
 
                     if success:
@@ -620,6 +716,35 @@ class MemorySearchRequest(BaseModel):
     task_id: Optional[str] = None
     categories: Optional[List[str]] = None
     top_k: int = Field(default=5, ge=1, le=50)
+
+
+class MemorySearchTextRequest(BaseModel):
+    query: str
+    project_id: Optional[str] = None
+    system_id: Optional[str] = None
+    task_id: Optional[str] = None
+    categories: Optional[List[str]] = None
+    top_k: int = Field(default=8, ge=1, le=50)
+
+
+class MemoryAddRequest(BaseModel):
+    content: str
+    project_id: Optional[str] = None
+    task_id: Optional[str] = None
+    system_id: Optional[str] = None
+    created_by: Optional[str] = "koweb"
+    categories: Optional[List[str]] = None
+
+
+class CodeSearchRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=8, ge=1, le=50)
+
+
+class CodeIndexRequest(BaseModel):
+    repo_path: Optional[str] = None
+    force_reindex: bool = False
+    model_id: Optional[str] = None
 
 
 class ManualTaskCreate(BaseModel):
@@ -1049,6 +1174,91 @@ async def update_memory_feedback(payload: MemoryFeedbackRequest):
     return {"status": "updated", "memory_id": payload.memory_id, "feedback": feedback_value}
 
 
+@app.post("/memory/items")
+async def add_memory_item(payload: MemoryAddRequest):
+    """Create a memory entry with server-side embeddings."""
+    if not payload.content.strip():
+        raise HTTPException(status_code=400, detail="content is required")
+
+    embedder = get_text_embedder()
+    embedding = embedder.embed_query(payload.content)
+
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        memory_id = await memory_manager.add_memory(
+            conn,
+            content=payload.content,
+            embedding=embedding,
+            project_id=payload.project_id,
+            task_id=payload.task_id,
+            system_id=payload.system_id,
+            created_by=payload.created_by or "koweb",
+            categories=payload.categories,
+        )
+    return {"status": "created", "memory_id": memory_id}
+
+
+@app.post("/memory/search-text")
+async def search_memory_text(payload: MemorySearchTextRequest):
+    """Perform semantic search with server-side text embeddings."""
+    if not payload.query.strip():
+        raise HTTPException(status_code=400, detail="query is required")
+
+    embedder = get_text_embedder()
+    query_embedding = embedder.embed_query(payload.query)
+
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        matches = await memory_manager.search(
+            conn,
+            embedding=query_embedding,
+            project_id=payload.project_id,
+            system_id=payload.system_id,
+            task_id=payload.task_id,
+            categories=payload.categories,
+            top_k=payload.top_k,
+        )
+        if not matches:
+            return []
+
+        memory_ids = [uuid.UUID(m_id) for (m_id, _score) in matches]
+        detail_rows = await conn.fetch(
+            """
+            SELECT
+                m.memory_id,
+                m.content,
+                m.project_id,
+                m.task_id,
+                m.system_id,
+                m.created_by,
+                m.created_at,
+                m.last_accessed_at,
+                m.access_count,
+                m.user_feedback,
+                COALESCE(array_remove(array_agg(c.name ORDER BY c.name), NULL), '{}'::text[]) AS categories
+            FROM memory_items m
+            LEFT JOIN memory_categories mc ON mc.memory_id = m.memory_id
+            LEFT JOIN categories c ON c.category_id = mc.category_id
+            WHERE m.memory_id = ANY($1::uuid[])
+            GROUP BY m.memory_id
+        """,
+            memory_ids,
+        )
+        details = {}
+        for row in detail_rows:
+            record = dict(row)
+            record["memory_id"] = str(record["memory_id"])
+            details[record["memory_id"]] = record
+
+    response = []
+    for memory_id, similarity in matches:
+        info = details.get(memory_id)
+        if info:
+            info["similarity"] = similarity
+            response.append(info)
+    return response
+
+
 @app.post("/memory/search")
 async def search_memory(payload: MemorySearchRequest):
     """Perform a semantic search against memory embeddings."""
@@ -1105,6 +1315,71 @@ async def search_memory(payload: MemorySearchRequest):
             info["similarity"] = similarity
             response.append(info)
     return response
+
+
+@app.post("/memory/code-search/{project_id}")
+async def code_search_endpoint(project_id: str, payload: CodeSearchRequest):
+    """Vector-only search across indexed code chunks."""
+    pool = await get_db_pool()
+    embedder = get_code_embedder()
+    query_embedding = embedder.embed_query(payload.query)
+    async with pool.acquire() as conn:
+        results = await search_code(conn, project_id, query_embedding, top_k=payload.top_k)
+    for row in results:
+        row["similarity"] = float(row["similarity"])
+    return results
+
+
+@app.post("/memory/code-index/{project_id}")
+async def code_index_endpoint(project_id: str, payload: CodeIndexRequest):
+    """Queue a host-side code indexing job for the given project."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await ensure_project_exists(conn, project_id)
+        tracking = await fetch_project_tracking(conn, project_id)
+        project = await conn.fetchrow(
+            "SELECT name FROM projects WHERE id = $1",
+            project_id,
+        )
+
+    repo_path = payload.repo_path or tracking.get("repo_path")
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="repo_path is required for code indexing")
+
+    model_id = payload.model_id or tracking.get("embedding_model_id") or "microsoft/codebert-base"
+    command = (
+        f"python memory/code_indexer.py --repo-path \"{repo_path}\" "
+        f"--project-id {project_id} --db-host localhost --db-port 5432 "
+        f"--db-name knowledge_manager --db-user km_user "
+        f"--db-password \"$KM_POSTGRES_PASSWORD\" --model \"{model_id}\""
+    )
+    description = (
+        "Run code-aware repository indexing.\n"
+        f"Project: {project['name']} ({project_id})\n"
+        f"Repo path: {repo_path}\n"
+        f"Model: {model_id}\n"
+        "Command:\n"
+        f"{command}"
+    )
+    context = {
+        "job_type": "code_index",
+        "repo_path": repo_path,
+        "model_id": model_id,
+        "force_reindex": payload.force_reindex,
+        "command": command,
+    }
+
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    task_id = task_queue.create_task(
+        project_id=project_id,
+        task_title=f"Code index - {project['name']}",
+        description=description,
+        priority=TaskPriority.HIGH,
+        cli_preference="local",
+        working_dir=repo_path,
+        context=context,
+    )
+    return {"status": "queued", "task_id": task_id}
 
 
 if __name__ == "__main__":

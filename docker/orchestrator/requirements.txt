@@ -11,6 +11,9 @@ psycopg2-binary==2.9.9
 # Numerical computing
 numpy==1.26.3
 
+# Embeddings
+sentence-transformers==2.7.0
+
 # Database migrations (optional)
 alembic==1.13.1
 

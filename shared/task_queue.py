@@ -248,7 +248,8 @@ class TaskQueue:
         self,
         task_id: str,
         assigned_to: str,
-        worker_pid: Optional[int] = None
+        worker_pid: Optional[int] = None,
+        extra_updates: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
         Assign a queued task to a CLI worker.
@@ -268,6 +269,8 @@ class TaskQueue:
 
         if worker_pid:
             updates["worker_pid"] = worker_pid
+        if extra_updates:
+            updates.update(extra_updates)
 
         return self.move_task(task_id, TaskStatus.QUEUED, TaskStatus.ASSIGNED, updates)
 

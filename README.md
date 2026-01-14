@@ -16,11 +16,14 @@ cd ~/projects/ai-orchestrator && docker compose up -d
 # Watch logs
 docker compose logs -f orchestrator
 
-# Stop orchestrator
-docker compose down
+# Stop everything
+./stop.sh
 
-# Restart after code changes
-docker compose build orchestrator && docker compose up -d orchestrator
+# Start everything (build + up)
+./start.sh
+
+# Rebuild everything (stop + start)
+./rebuild.sh
 
 # Check status
 docker compose ps
@@ -28,6 +31,20 @@ curl http://localhost:8000/health
 
 # View task queue
 ls -la ~/projects/ai-orchestrator/task_queue/*/
+
+# Web UI (koweb)
+docker compose up -d koweb
+# Open http://localhost:3001
+
+# LM Studio (local server)
+# Default LM Studio port is 1234; configured via LLAMA_CPP_PORT in docker-compose.yml.
+
+# LM Studio bridge (host-side control service)
+./lms_bridge/run.sh
+export KO_WEB_LMS_BRIDGE_URL=http://localhost:5080
+
+# Show Docker info
+./info.sh
 ```
 
 **End-to-End Usage:**
