@@ -9,3 +9,7 @@ cd "$REPO_ROOT"
 
 echo "==> Stopping services (docker compose down --remove-orphans)"
 docker compose down --remove-orphans
+
+if [ -x "./lms_bridge/bridge.sh" ]; then
+    ./lms_bridge/bridge.sh stop
+fi

@@ -1,0 +1,47 @@
+==> docker compose ps
+NAME              IMAGE                          COMMAND                  SERVICE        CREATED         STATUS                          PORTS
+km-koweb          ai-orchestrator-koweb          "koweb"                  koweb          8 minutes ago   Up 7 minutes                    0.0.0.0:3001->3001/tcp, [::]:3001->3001/tcp
+km-orchestrator   ai-orchestrator-orchestrator   "python main.py"         orchestrator   8 minutes ago   Restarting (1) 45 seconds ago   
+km-postgres       pgvector/pgvector:pg16         "docker-entrypoint.s…"   postgres       8 minutes ago   Up 8 minutes (healthy)          0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp
+
+==> docker ps
+CONTAINER ID   IMAGE                          COMMAND                  CREATED         STATUS                          PORTS                                         NAMES
+6c466435b067   ai-orchestrator-koweb          "koweb"                  8 minutes ago   Up 7 minutes                    0.0.0.0:3001->3001/tcp, [::]:3001->3001/tcp   km-koweb
+86f7e165cab0   ai-orchestrator-orchestrator   "python main.py"         8 minutes ago   Restarting (1) 45 seconds ago                                                 km-orchestrator
+68bac8640c99   pgvector/pgvector:pg16         "docker-entrypoint.s…"   8 minutes ago   Up 8 minutes (healthy)          0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp   km-postgres
+
+==> docker images (top 20)
+IMAGE                                           ID             DISK USAGE   CONTENT SIZE   EXTRA
+ai-orchestrator-koweb:latest                    8998eb5893d3        297MB         71.4MB   U    
+ai-orchestrator-orchestrator:latest             e160849307e4       12.2GB         4.35GB   U    
+alpine:latest                                   51183f2cfa63         13MB         3.86MB   U    
+artifision/live-charts-docker-extension:1.2.1   c3c57839276b       14.3MB          4.4MB        
+dpage/pgadmin4:9.11                             50700ac17936        823MB          185MB   U    
+drewsk/docker-sql-extension:0.3.0               e3a2524f67a5        160MB         41.4MB   U    
+memgraph/lab:3.7.0                              a5d57883f80d        275MB         73.1MB        
+memgraph/memgraph-mage:3.7.1                    9756a21bc594       3.13GB          732MB        
+mochoa/pgadmin4-docker-extension:9.11.0         df4ad60dccbc       20.9MB          6.1MB   U    
+pgvector/pgvector:pg16                          0a07c4114ba6        723MB          185MB   U    
+postgres:16                                     d4c3314b2dd7        636MB          160MB        
+rw4lll/openwebui-docker-extension:0.1.0         b7e59b9001cc       12.8MB         3.78MB        
+telkombe/remote-docker:1.0.41                   23ad1e3475b7        386MB         97.6MB   U    
+
+==> docker volumes
+DRIVER    VOLUME NAME
+local     ai-orchestrator_postgres_data
+local     ai-orchestrator_task_queue
+local     docker_postgres_data
+local     mochoa_pgadmin4-docker-extension-desktop-extension_pgadmin_data
+local     telkombe_remote-docker-desktop-extension_remote-docker-settings
+
+==> docker networks
+NETWORK ID     NAME                                                          DRIVER    SCOPE
+d2446dcf54b2   bridge                                                        bridge    local
+c2b402698b53   docker_km-network                                             bridge    local
+47b0ebf8ecde   drewsk_docker-sql-extension-desktop-extension_default         bridge    local
+274331685b1a   host                                                          host      local
+97d88e3b44f3   km-network                                                    bridge    local
+03f9de1bd8e4   mochoa_pgadmin4-docker-extension-desktop-extension_default    bridge    local
+b80a49692410   none                                                          null      local
+59da357ae47c   rw4lll_openwebui-docker-extension-desktop-extension_default   bridge    local
+88ce51ed89e7   telkombe_remote-docker-desktop-extension_default              bridge    local

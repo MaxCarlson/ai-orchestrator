@@ -13,5 +13,9 @@ docker compose build --pull
 echo "==> Starting services (docker compose up -d)"
 docker compose up -d
 
+if [ -x "./lms_bridge/bridge.sh" ]; then
+    ./lms_bridge/bridge.sh start
+fi
+
 echo "==> Current service status"
 docker compose ps

@@ -40,7 +40,8 @@ docker compose up -d koweb
 # Default LM Studio port is 1234; configured via LLAMA_CPP_PORT in docker-compose.yml.
 
 # LM Studio bridge (host-side control service)
-./lms_bridge/run.sh
+./lms_bridge/bridge.sh start
+./lms_bridge/bridge.sh status
 export KO_WEB_LMS_BRIDGE_URL=http://localhost:5080
 
 # Show Docker info

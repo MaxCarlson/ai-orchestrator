@@ -19,8 +19,7 @@ LMS_HOST = os.getenv("LMS_HOST")
 LMS_PORT = os.getenv("LMS_PORT")
 
 
-def _base_args() -> List[str]:
-    args = [LMS_BINARY]
+def _append_instance_args(args: List[str]) -> List[str]:
     if LMS_HOST:
         args.extend(["--host", LMS_HOST])
     if LMS_PORT:
@@ -29,7 +28,7 @@ def _base_args() -> List[str]:
 
 
 def _run_lms(args: List[str], timeout: int = 300) -> Dict[str, Any]:
-    cmd = _base_args() + args
+    cmd = [LMS_BINARY] + _append_instance_args(list(args))
     try:
         result = subprocess.run(
             cmd,

@@ -233,6 +233,14 @@ async def bootstrap_memory_and_settings() -> None:
         await initialize_schema(conn)
         await ensure_settings_schema(conn)
         await ensure_project_tracking_schema(conn)
+        # Ensure a default model record exists
+        current_model = await get_orchestrator_setting(conn, "current_model")
+        if not current_model:
+            await set_orchestrator_setting(
+                conn,
+                "current_model",
+                {"model_id": AVAILABLE_MODELS[0]["id"]},
+            )
 
 
 def get_code_embedder() -> CodeEmbedder:
@@ -309,14 +317,6 @@ async def _attach_code_context(task_data: dict) -> dict:
         "code_context": context_entries,
         "description": description + context_text,
     }
-        # Ensure a default model record exists
-        current_model = await get_orchestrator_setting(conn, "current_model")
-        if not current_model:
-            await set_orchestrator_setting(
-                conn,
-                "current_model",
-                {"model_id": AVAILABLE_MODELS[0]["id"]},
-            )
 
 
 def normalise_tracking_record(project_id: str, row: Optional[asyncpg.Record]) -> dict:
