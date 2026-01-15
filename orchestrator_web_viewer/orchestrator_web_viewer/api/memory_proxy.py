@@ -36,6 +36,15 @@ class MemorySearchTextPayload(BaseModel):
     top_k: int = Field(default=8, ge=1, le=50)
 
 
+class GlobalEmbeddingPayload(BaseModel):
+    repo_path: Optional[str] = None
+    repo_paths: Optional[List[str]] = None
+    mode: str = "auto"
+    code_model_id: Optional[str] = None
+    text_model_id: Optional[str] = None
+    force_reindex: bool = False
+
+
 class MemoryAddPayload(BaseModel):
     content: str
     project_id: Optional[str] = None
@@ -73,6 +82,12 @@ async def memory_stats():
     return await orchestrator_get("/memory/stats")
 
 
+@router.get("/global/stats")
+async def global_memory_stats():
+    """Return global memory stats."""
+    return await orchestrator_get("/memory/global/stats")
+
+
 @router.delete("/items/{memory_id}")
 async def delete_memory(memory_id: str):
     """Delete a memory entry."""
@@ -97,10 +112,53 @@ async def search_memory_text(payload: MemorySearchTextPayload):
     return await orchestrator_post("/memory/search-text", payload.dict())
 
 
+@router.post("/global/search-text")
+async def search_global_memory_text(payload: MemorySearchTextPayload):
+    """Run a semantic search using a text query (global)."""
+    return await orchestrator_post("/memory/global/search-text", payload.dict())
+
+
 @router.post("/items")
 async def add_memory(payload: MemoryAddPayload):
     """Add a memory item with embeddings generated server-side."""
     return await orchestrator_post("/memory/items", payload.dict())
+
+
+@router.get("/global/items")
+async def list_global_memory_items(
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """Return global memory items."""
+    params = {
+        "limit": limit,
+        "offset": offset,
+    }
+    if category:
+        params["category"] = category
+    if search:
+        params["search"] = search
+    return await orchestrator_get("/memory/global/items", params=params)
+
+
+@router.post("/global/index")
+async def queue_global_embeddings(payload: GlobalEmbeddingPayload):
+    """Queue global embeddings for arbitrary paths."""
+    return await orchestrator_post("/memory/global/index", payload.dict())
+
+
+@router.get("/embedding-runs")
+async def list_embedding_runs(
+    status: Optional[str] = None,
+    limit: int = Query(default=5, ge=1, le=50),
+):
+    """Return recent embedding runs."""
+    params = {"limit": limit}
+    if status:
+        params["status"] = status
+    return await orchestrator_get("/memory/embedding-runs", params=params)
 
 
 @router.post("/code-index/{project_id}")

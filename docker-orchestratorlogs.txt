@@ -1,0 +1,63 @@
+km-orchestrator  | /usr/local/lib/python3.11/site-packages/pydantic/_internal/_fields.py:149: UserWarning: Field "model_id" has conflict with protected namespace "model_".
+km-orchestrator  | 
+km-orchestrator  | You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+km-orchestrator  |   warnings.warn(
+km-orchestrator  | INFO:     Started server process [1]
+km-orchestrator  | INFO:     Waiting for application startup.
+km-orchestrator  | 2026-01-15 02:17:25,585 - main - INFO - Starting AI Orchestrator...
+km-orchestrator  | 2026-01-15 02:17:25,613 - main - INFO - Database connection pool created
+km-orchestrator  | 2026-01-15 02:17:25,663 - main - INFO - Memory schema verified and orchestrator settings ready
+km-orchestrator  | 2026-01-15 02:17:25,663 - main - INFO - Subscribing to task_updates channel...
+km-orchestrator  | 2026-01-15 02:17:25,664 - shared.task_queue - INFO - Task queue initialized at /app/task_queue
+km-orchestrator  | 2026-01-15 02:17:25,664 - main - INFO - Task processor started - polling task queue...
+km-orchestrator  | INFO:     Application startup complete.
+km-orchestrator  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+km-orchestrator  | INFO:     127.0.0.1:50358 - "GET /health HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:42028 - "GET /config/models HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:42032 - "GET /projects/tracking HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:42040 - "GET /config/models HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:59930 - "GET /config/models HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     127.0.0.1:33830 - "GET /health HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:59934 - "GET /config/models HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:55352 - "GET /config/models HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:55362 - "GET /config/models HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:34396 - "GET /config/models HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:34406 - "GET /config/models HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:34410 - "GET /projects/tracking HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:52476 - "GET /projects/tracking HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     127.0.0.1:39966 - "GET /health HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:52478 - "GET /projects/tracking HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:39604 - "GET /projects/tracking HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:39620 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:39626 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:53614 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:53628 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:51098 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     127.0.0.1:39932 - "GET /health HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:51102 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:42512 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:42516 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:43136 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:43146 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:37466 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     127.0.0.1:51846 - "GET /health HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:37474 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:47124 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:47126 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:47786 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:47802 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:45754 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     127.0.0.1:51692 - "GET /health HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:45764 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:45576 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:45582 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:34200 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:34210 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | 2026-01-15 02:20:24,521 - shared.task_queue - INFO - Task queue initialized at /app/task_queue
+km-orchestrator  | 2026-01-15 02:20:24,523 - shared.task_queue - INFO - Task 2cf6a042-0e4a-43c9-8cd6-e68c5e8d64b0 created and queued: Embed global repository
+km-orchestrator  | INFO:     172.23.0.4:58068 - "POST /memory/global/index HTTP/1.1" 200 OK
+km-orchestrator  | INFO:     172.23.0.4:58084 - "GET /memory/global/stats HTTP/1.1" 200 OK
+km-orchestrator  | 2026-01-15 02:20:25,425 - main - INFO - Found 1 queued tasks
+km-orchestrator  | 2026-01-15 02:20:25,425 - main - INFO - Assigning task 2cf6a042 to local
+km-orchestrator  | 2026-01-15 02:20:29,094 - sentence_transformers.SentenceTransformer - INFO - Load pretrained SentenceTransformer: microsoft/codebert-base
+km-orchestrator  | 2026-01-15 02:20:29,383 - sentence_transformers.SentenceTransformer - WARNING - No sentence-transformers model found with name microsoft/codebert-base. Creating a new one with MEAN pooling.

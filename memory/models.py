@@ -61,6 +61,24 @@ CREATE TABLE IF NOT EXISTS memory_items (
 );
 """
 
+CREATE_GLOBAL_MEMORY_TABLE = """
+CREATE TABLE IF NOT EXISTS global_memory_items (
+    memory_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    embedding vector(768) NOT NULL,
+    source_key TEXT NOT NULL,
+    source_project_id UUID NULL REFERENCES projects(id) ON DELETE SET NULL,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    access_count INTEGER NOT NULL DEFAULT 0,
+    user_feedback SMALLINT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    UNIQUE (source_key, content_hash)
+);
+"""
+
 CREATE_CATEGORY_TABLE = """
 CREATE TABLE IF NOT EXISTS categories (
     category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -73,6 +91,14 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE_MEMORY_CATEGORY_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_categories (
     memory_id UUID NOT NULL REFERENCES memory_items(memory_id) ON DELETE CASCADE,
+    category_id UUID NOT NULL REFERENCES categories(category_id) ON DELETE CASCADE,
+    PRIMARY KEY (memory_id, category_id)
+);
+"""
+
+CREATE_GLOBAL_MEMORY_CATEGORY_TABLE = """
+CREATE TABLE IF NOT EXISTS global_memory_categories (
+    memory_id UUID NOT NULL REFERENCES global_memory_items(memory_id) ON DELETE CASCADE,
     category_id UUID NOT NULL REFERENCES categories(category_id) ON DELETE CASCADE,
     PRIMARY KEY (memory_id, category_id)
 );
@@ -101,6 +127,46 @@ CREATE TABLE IF NOT EXISTS code_chunks (
 );
 """
 
+CREATE_GLOBAL_CODE_CHUNKS_TABLE = """
+CREATE TABLE IF NOT EXISTS global_code_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    source_key TEXT NOT NULL,
+    source_project_id UUID NULL REFERENCES projects(id) ON DELETE SET NULL,
+    file_path TEXT NOT NULL,
+    symbol_name TEXT NOT NULL,
+    chunk_type TEXT NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    embedding vector(768) NOT NULL,
+    embedding_model TEXT NOT NULL,
+    pagerank_score DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    language TEXT,
+    git_commit TEXT,
+    embedding_status TEXT NOT NULL DEFAULT 'ready',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (source_key, file_path, symbol_name)
+);
+"""
+
+CREATE_EMBEDDING_RUNS_TABLE = """
+CREATE TABLE IF NOT EXISTS embedding_runs (
+    run_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NULL REFERENCES projects(id) ON DELETE SET NULL,
+    target TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    stats JSONB DEFAULT '{}'::jsonb,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
 CREATE_EMBEDDING_INDEX = """
 -- Use the ivfflat index for efficient vector search with cosine
 -- similarity. The index creation might fail if pgvector is not
@@ -113,6 +179,12 @@ ON memory_items USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 """
 
+CREATE_GLOBAL_EMBEDDING_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_global_memory_items_embedding
+ON global_memory_items USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+"""
+
 CREATE_CODE_CHUNKS_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_code_chunks_project_status
 ON code_chunks (project_id, embedding_status);
@@ -122,6 +194,18 @@ ON code_chunks (content_hash);
 
 CREATE INDEX IF NOT EXISTS idx_code_chunks_embedding
 ON code_chunks USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+"""
+
+CREATE_GLOBAL_CODE_CHUNKS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_global_code_chunks_source_status
+ON global_code_chunks (source_key, embedding_status);
+
+CREATE INDEX IF NOT EXISTS idx_global_code_chunks_content_hash
+ON global_code_chunks (content_hash);
+
+CREATE INDEX IF NOT EXISTS idx_global_code_chunks_embedding
+ON global_code_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 """
 

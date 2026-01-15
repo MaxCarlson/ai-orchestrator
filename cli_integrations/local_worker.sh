@@ -22,8 +22,8 @@ fi
 
 mkdir -p "$RESULTS_DIR/artifacts"
 
-mv "$TASK_FILE" "$TASK_QUEUE_PATH/in_progress/$TASK_ID.json" || {
-    echo "Error: Failed to move task to in_progress" >&2
+mv -f "$TASK_FILE" "$TASK_QUEUE_PATH/in_progress/$TASK_ID.json" || {
+    echo "Error: Failed to move task to in_progress (check task_queue ownership)" >&2
     exit 1
 }
 

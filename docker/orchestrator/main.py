@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     postgres_user: str = "km_user"
     postgres_password: str
     postgres_db: str = "knowledge_manager"
+    host_postgres_host: str = "localhost"
+    host_postgres_port: int = 5432
+    host_repo_root: str = "/home/mcarls/projects/ai-orchestrator"
 
     # Orchestrator
     log_level: str = "INFO"
@@ -108,6 +111,13 @@ TRACKING_STATUSES = {
 
 CODE_CONTEXT_MAX_CHARS = 8000
 CODE_CONTEXT_SNIPPET_CHARS = 1200
+GLOBAL_TASK_PROJECT_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def _worker_db_target(cli_preference: str) -> tuple[str, int]:
+    if cli_preference == "local":
+        return settings.host_postgres_host, settings.host_postgres_port
+    return settings.postgres_host, settings.postgres_port
 
 
 async def get_db_pool() -> asyncpg.Pool:
@@ -160,6 +170,15 @@ async def ensure_project_tracking_schema(conn: asyncpg.Connection) -> None:
             embedding_last_indexed TIMESTAMPTZ,
             preferred_model_id TEXT,
             embedding_model_id TEXT,
+            text_embedding_model_id TEXT,
+            embedding_mode TEXT,
+            global_embedding_status TEXT NOT NULL DEFAULT 'not_tracked',
+            global_embedding_last_indexed TIMESTAMPTZ,
+            global_embedding_mode TEXT,
+            global_code_model_id TEXT,
+            global_text_model_id TEXT,
+            embedding_stats JSONB,
+            global_embedding_stats JSONB,
             gpu_enabled BOOLEAN NOT NULL DEFAULT FALSE,
             gpu_device TEXT,
             notes TEXT,
@@ -170,6 +189,33 @@ async def ensure_project_tracking_schema(conn: asyncpg.Connection) -> None:
     )
     await conn.execute(
         "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS repo_paths TEXT;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS text_embedding_model_id TEXT;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS embedding_mode TEXT;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS global_embedding_status TEXT NOT NULL DEFAULT 'not_tracked';"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS global_embedding_last_indexed TIMESTAMPTZ;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS global_embedding_mode TEXT;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS global_code_model_id TEXT;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS global_text_model_id TEXT;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS embedding_stats JSONB;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS global_embedding_stats JSONB;"
     )
 
 
@@ -282,6 +328,10 @@ def _build_code_context_text(entries: list[dict]) -> str:
 
 
 async def _attach_code_context(task_data: dict) -> dict:
+    context = task_data.get("context") or {}
+    job_type = context.get("job_type")
+    if job_type in {"index_repo", "index_global_repo", "code_index"}:
+        return {}
     project_id = task_data.get("project_id")
     description = task_data.get("description") or ""
     if not project_id or not description.strip():
@@ -330,6 +380,15 @@ def normalise_tracking_record(project_id: str, row: Optional[asyncpg.Record]) ->
         "embedding_last_indexed": None,
         "preferred_model_id": None,
         "embedding_model_id": None,
+        "text_embedding_model_id": None,
+        "embedding_mode": None,
+        "global_embedding_status": "not_tracked",
+        "global_embedding_last_indexed": None,
+        "global_embedding_mode": None,
+        "global_code_model_id": None,
+        "global_text_model_id": None,
+        "embedding_stats": None,
+        "global_embedding_stats": None,
         "gpu_enabled": False,
         "gpu_device": None,
         "notes": None,
@@ -360,6 +419,15 @@ async def fetch_project_tracking(conn: asyncpg.Connection, project_id: str) -> d
             embedding_last_indexed,
             preferred_model_id,
             embedding_model_id,
+            text_embedding_model_id,
+            embedding_mode,
+            global_embedding_status,
+            global_embedding_last_indexed,
+            global_embedding_mode,
+            global_code_model_id,
+            global_text_model_id,
+            embedding_stats,
+            global_embedding_stats,
             gpu_enabled,
             gpu_device,
             notes
@@ -379,6 +447,13 @@ def validate_model_choice(model_id: Optional[str]) -> Optional[str]:
     if not model:
         raise HTTPException(status_code=404, detail=f"Unknown model id '{model_id}'")
     return model["id"]
+
+
+def normalize_embedding_model_id(model_id: Optional[str]) -> Optional[str]:
+    if not model_id:
+        return None
+    value = model_id.strip()
+    return value or None
 
 
 async def ensure_project_exists(conn: asyncpg.Connection, project_id: str) -> None:
@@ -434,8 +509,30 @@ async def upsert_project_tracking(
     preferred_model_id = validate_model_choice(
         data.preferred_model_id or current["preferred_model_id"]
     )
-    embedding_model_id = validate_model_choice(
+    embedding_model_id = normalize_embedding_model_id(
         data.embedding_model_id or current["embedding_model_id"]
+    )
+    text_embedding_model_id = normalize_embedding_model_id(
+        data.text_embedding_model_id or current.get("text_embedding_model_id")
+    )
+    embedding_mode = data.embedding_mode or current.get("embedding_mode")
+
+    global_embedding_status = data.global_embedding_status or current["global_embedding_status"]
+    if global_embedding_status not in TRACKING_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid global embedding status '{global_embedding_status}'",
+        )
+    global_embedding_mode = data.global_embedding_mode or current.get("global_embedding_mode")
+    global_code_model_id = normalize_embedding_model_id(
+        data.global_code_model_id or current.get("global_code_model_id")
+    )
+    global_text_model_id = normalize_embedding_model_id(
+        data.global_text_model_id or current.get("global_text_model_id")
+    )
+    embedding_stats = data.embedding_stats if data.embedding_stats is not None else current.get("embedding_stats")
+    global_embedding_stats = (
+        data.global_embedding_stats if data.global_embedding_stats is not None else current.get("global_embedding_stats")
     )
 
     gpu_enabled = (
@@ -455,6 +552,15 @@ async def upsert_project_tracking(
             embedding_last_indexed,
             preferred_model_id,
             embedding_model_id,
+            text_embedding_model_id,
+            embedding_mode,
+            global_embedding_status,
+            global_embedding_last_indexed,
+            global_embedding_mode,
+            global_code_model_id,
+            global_text_model_id,
+            embedding_stats,
+            global_embedding_stats,
             gpu_enabled,
             gpu_device,
             notes,
@@ -471,6 +577,15 @@ async def upsert_project_tracking(
             $9,
             $10,
             $11,
+            CASE WHEN $11 = 'ready' THEN NOW() ELSE $12 END,
+            $13,
+            $14,
+            $15,
+            $16,
+            $17,
+            $18,
+            $19,
+            $20,
             NOW()
         )
         ON CONFLICT (project_id)
@@ -485,6 +600,18 @@ async def upsert_project_tracking(
             END,
             preferred_model_id = EXCLUDED.preferred_model_id,
             embedding_model_id = EXCLUDED.embedding_model_id,
+            text_embedding_model_id = EXCLUDED.text_embedding_model_id,
+            embedding_mode = EXCLUDED.embedding_mode,
+            global_embedding_status = EXCLUDED.global_embedding_status,
+            global_embedding_last_indexed = CASE
+                WHEN EXCLUDED.global_embedding_status = 'ready' THEN NOW()
+                ELSE project_tracking.global_embedding_last_indexed
+            END,
+            global_embedding_mode = EXCLUDED.global_embedding_mode,
+            global_code_model_id = EXCLUDED.global_code_model_id,
+            global_text_model_id = EXCLUDED.global_text_model_id,
+            embedding_stats = EXCLUDED.embedding_stats,
+            global_embedding_stats = EXCLUDED.global_embedding_stats,
             gpu_enabled = EXCLUDED.gpu_enabled,
             gpu_device = EXCLUDED.gpu_device,
             notes = EXCLUDED.notes,
@@ -498,6 +625,15 @@ async def upsert_project_tracking(
         current["embedding_last_indexed"],
         preferred_model_id,
         embedding_model_id,
+        text_embedding_model_id,
+        embedding_mode,
+        global_embedding_status,
+        current.get("global_embedding_last_indexed"),
+        global_embedding_mode,
+        global_code_model_id,
+        global_text_model_id,
+        embedding_stats,
+        global_embedding_stats,
         gpu_enabled,
         gpu_device,
         notes,
@@ -615,6 +751,12 @@ async def spawn_cli_worker(task_queue: TaskQueue, task_data: dict, cli_type: str
     """Spawn a CLI worker process to execute the task"""
     task_id = task_data['task_id']
     description = task_data.get('description', '')
+    if cli_type == "local":
+        logger.info(
+            "Local task %s queued; expecting host-side local worker to pick it up.",
+            task_id[:8],
+        )
+        return
 
     # Create worker script path
     worker_script = Path(__file__).parent.parent.parent / "cli_integrations" / f"{cli_type}_worker.sh"
@@ -622,10 +764,11 @@ async def spawn_cli_worker(task_queue: TaskQueue, task_data: dict, cli_type: str
     if not worker_script.exists():
         logger.warning(f"Worker script not found: {worker_script}")
         logger.info(f"Creating placeholder worker for {cli_type}")
-        # For now, just mark as started and simulate work
-        task_queue.start_task(task_id)
-        # TODO: Implement actual CLI workers
-        logger.info(f"Task {task_id[:8]} started (simulated)")
+        task_queue.fail_task(
+            task_id,
+            error={"type": "WorkerMissing", "message": f"Worker {cli_type} not available"},
+            exit_code=1,
+        )
         return
 
     try:
@@ -767,14 +910,34 @@ class ProjectTrackingUpdate(BaseModel):
     embedding_status: Optional[str] = None
     preferred_model_id: Optional[str] = None
     embedding_model_id: Optional[str] = None
+    text_embedding_model_id: Optional[str] = None
+    embedding_mode: Optional[str] = None
+    global_embedding_status: Optional[str] = None
+    global_embedding_last_indexed: Optional[str] = None
+    global_embedding_mode: Optional[str] = None
+    global_code_model_id: Optional[str] = None
+    global_text_model_id: Optional[str] = None
+    embedding_stats: Optional[dict] = None
+    global_embedding_stats: Optional[dict] = None
     gpu_enabled: Optional[bool] = None
     gpu_device: Optional[str] = None
     notes: Optional[str] = None
 
 
 class EmbeddingJobRequest(BaseModel):
-    scope: Literal["code", "text", "both"] = "both"
-    model_id: Optional[str] = None
+    mode: Literal["auto", "code", "text"] = "auto"
+    target: Literal["project", "global", "both"] = "project"
+    code_model_id: Optional[str] = None
+    text_model_id: Optional[str] = None
+    force_reindex: bool = False
+
+
+class GlobalEmbeddingRequest(BaseModel):
+    repo_path: Optional[str] = None
+    repo_paths: Optional[List[str]] = None
+    mode: Literal["auto", "code", "text"] = "auto"
+    code_model_id: Optional[str] = None
+    text_model_id: Optional[str] = None
     force_reindex: bool = False
 
 
@@ -885,6 +1048,15 @@ async def list_project_tracking():
                 pt.embedding_last_indexed,
                 pt.preferred_model_id,
                 pt.embedding_model_id,
+                pt.text_embedding_model_id,
+                pt.embedding_mode,
+                COALESCE(pt.global_embedding_status, 'not_tracked') AS global_embedding_status,
+                pt.global_embedding_last_indexed,
+                pt.global_embedding_mode,
+                pt.global_code_model_id,
+                pt.global_text_model_id,
+                pt.embedding_stats,
+                pt.global_embedding_stats,
                 COALESCE(pt.gpu_enabled, FALSE) AS gpu_enabled,
                 pt.gpu_device,
                 pt.notes
@@ -955,26 +1127,54 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
                 detail="Project must be tracked with a repository path before indexing",
             )
 
-        model_id = (
-            validate_model_choice(payload.model_id)
-            or tracking["embedding_model_id"]
-            or tracking["preferred_model_id"]
-        )
-        if model_id is None:
-            model_id = AVAILABLE_MODELS[0]["id"]
+    code_model_id = (
+        normalize_embedding_model_id(payload.code_model_id)
+        or tracking.get("embedding_model_id")
+        or "microsoft/codebert-base"
+    )
+    text_model_id = (
+        normalize_embedding_model_id(payload.text_model_id)
+        or tracking.get("text_embedding_model_id")
+        or "BAAI/bge-base-en-v1.5"
+    )
 
-        status_payload = ProjectTrackingUpdate(
-            embedding_status="indexing",
-            embedding_model_id=model_id,
-        )
+    status_payload = ProjectTrackingUpdate()
+    if payload.target in {"project", "both"}:
+        status_payload.embedding_status = "indexing"
+        status_payload.embedding_model_id = code_model_id
+        status_payload.text_embedding_model_id = text_model_id
+        status_payload.embedding_mode = payload.mode
+    if payload.target in {"global", "both"}:
+        status_payload.global_embedding_status = "indexing"
+        status_payload.global_code_model_id = code_model_id
+        status_payload.global_text_model_id = text_model_id
+        status_payload.global_embedding_mode = payload.mode
+    if status_payload.model_dump(exclude_none=True):
         await upsert_project_tracking(conn, project_id, status_payload)
 
         project_name = project["name"]
         repo_path = repo_paths[0]
 
     task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    db_host, db_port = _worker_db_target("local")
+    base_command = (
+        "python memory/run_embeddings.py"
+        f" --project-id {project_id}"
+        f" --mode {payload.mode}"
+        f" --target {payload.target}"
+        f" --code-model \"{code_model_id}\""
+        f" --text-model \"{text_model_id}\""
+        f" --db-host \"{db_host}\""
+        f" --db-port {db_port}"
+        f" --db-name \"{settings.postgres_db}\""
+        f" --db-user \"{settings.postgres_user}\""
+        f" --db-password \"{settings.postgres_password}\""
+    )
+    if payload.force_reindex:
+        base_command += " --force-reindex"
+
     commands = "\n".join(
-        f"python memory/embed_repo.py --repo-path \"{path}\" --project-id {project_id}"
+        f"{base_command} --repo-path \"{path}\""
         for path in repo_paths
     )
     repo_paths_display = "\n".join(f"- {path}" for path in repo_paths)
@@ -982,17 +1182,24 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
         "Run repository embedding for the selected project.\n"
         f"Project: {project_name} ({project_id})\n"
         f"Repository paths:\n{repo_paths_display}\n"
-        f"Scope: {payload.scope}\n"
+        f"Mode: {payload.mode}\n"
+        f"Target: {payload.target}\n"
         "Command hint:\n"
         f"{commands}"
     )
     context = {
         "job_type": "index_repo",
-        "scope": payload.scope,
+        "mode": payload.mode,
+        "target": payload.target,
         "repo_path": repo_path,
         "repo_paths": repo_paths,
-        "model_id": model_id,
+        "code_model_id": code_model_id,
+        "text_model_id": text_model_id,
         "force_reindex": payload.force_reindex,
+        "command": "set -e\n" + "\n".join(
+            f"{base_command} --repo-path \"{path}\""
+            for path in repo_paths
+        ),
     }
 
     task_id = task_queue.create_task(
@@ -1000,15 +1207,79 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
         task_title=f"Embed repository - {project_name}",
         description=description,
         priority=TaskPriority.HIGH,
-        cli_preference="claude",
+        cli_preference="local",
+        working_dir=settings.host_repo_root,
         context=context,
     )
 
     return {
         "status": "queued",
         "task_id": task_id,
-        "embedding_status": "indexing",
+        "embedding_status": "indexing" if payload.target in {"project", "both"} else tracking["embedding_status"],
     }
+
+
+@app.post("/memory/global/index")
+async def queue_global_embedding(payload: GlobalEmbeddingRequest):
+    """Create a task to index global embeddings for arbitrary paths."""
+    repo_paths = payload.repo_paths or []
+    if payload.repo_path:
+        repo_paths.append(payload.repo_path)
+    repo_paths = [path.strip() for path in repo_paths if path and path.strip()]
+    if not repo_paths:
+        raise HTTPException(status_code=400, detail="At least one repo path is required")
+
+    code_model_id = normalize_embedding_model_id(payload.code_model_id) or "microsoft/codebert-base"
+    text_model_id = normalize_embedding_model_id(payload.text_model_id) or "BAAI/bge-base-en-v1.5"
+
+    db_host, db_port = _worker_db_target("local")
+    base_command = (
+        "python memory/run_embeddings.py"
+        f" --mode {payload.mode}"
+        " --target global"
+        f" --code-model \"{code_model_id}\""
+        f" --text-model \"{text_model_id}\""
+        f" --db-host \"{db_host}\""
+        f" --db-port {db_port}"
+        f" --db-name \"{settings.postgres_db}\""
+        f" --db-user \"{settings.postgres_user}\""
+        f" --db-password \"{settings.postgres_password}\""
+    )
+    if payload.force_reindex:
+        base_command += " --force-reindex"
+
+    command = "set -e\n" + "\n".join(
+        f"{base_command} --repo-path \"{path}\""
+        for path in repo_paths
+    )
+
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    description = (
+        "Run global repository embeddings.\n"
+        f"Repository paths:\n" + "\n".join(f"- {path}" for path in repo_paths)
+    )
+    context = {
+        "job_type": "index_global_repo",
+        "mode": payload.mode,
+        "target": "global",
+        "repo_paths": repo_paths,
+        "code_model_id": code_model_id,
+        "text_model_id": text_model_id,
+        "force_reindex": payload.force_reindex,
+        "command": command,
+    }
+
+    task_id = task_queue.create_task(
+        project_id=GLOBAL_TASK_PROJECT_ID,
+        task_title="Embed global repository",
+        description=description,
+        priority=TaskPriority.HIGH,
+        cli_preference="local",
+        working_dir=settings.host_repo_root,
+        context=context,
+    )
+
+    return {"status": "queued", "task_id": task_id}
 
 
 @app.get("/stats")
@@ -1097,6 +1368,99 @@ async def list_memory_items(
         return [dict(row) for row in rows]
 
 
+@app.get("/memory/global/items")
+async def list_global_memory_items(
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """List global memory items with optional filters."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        clauses: List[str] = []
+        params: List[object] = []
+
+        if category:
+            params.append(category)
+            clauses.append(
+                f"""
+                m.memory_id IN (
+                    SELECT mc.memory_id
+                    FROM global_memory_categories mc
+                    JOIN categories c ON c.category_id = mc.category_id
+                    WHERE c.name = ${len(params)}
+                )
+                """
+            )
+
+        if search:
+            params.append(f"%{search}%")
+            clauses.append(f"m.content ILIKE ${len(params)}")
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.extend([limit, offset])
+
+        query = f"""
+            SELECT
+                m.memory_id,
+                m.content,
+                m.source_key,
+                m.source_project_id,
+                m.created_by,
+                m.created_at,
+                m.last_accessed_at,
+                m.access_count,
+                m.user_feedback,
+                COALESCE(array_remove(array_agg(c.name ORDER BY c.name), NULL), '{{}}'::text[]) AS categories
+            FROM global_memory_items m
+            LEFT JOIN global_memory_categories mc ON mc.memory_id = m.memory_id
+            LEFT JOIN categories c ON c.category_id = mc.category_id
+            {where_sql}
+            GROUP BY m.memory_id
+            ORDER BY m.created_at DESC
+            LIMIT ${len(params) - 1}
+            OFFSET ${len(params)}
+        """
+        rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+
+
+@app.get("/memory/embedding-runs")
+async def list_embedding_runs(
+    status: Optional[str] = None,
+    limit: int = Query(default=5, ge=1, le=50),
+):
+    """Return recent embedding runs with stats."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        if status:
+            rows = await conn.fetch(
+                """
+                SELECT run_id, project_id, target, mode, status,
+                       started_at, finished_at, stats, error
+                FROM embedding_runs
+                WHERE status = $1
+                ORDER BY started_at DESC NULLS LAST
+                LIMIT $2
+                """,
+                status,
+                limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT run_id, project_id, target, mode, status,
+                       started_at, finished_at, stats, error
+                FROM embedding_runs
+                ORDER BY started_at DESC NULLS LAST
+                LIMIT $1
+                """,
+                limit,
+            )
+    return [dict(row) for row in rows]
+
+
 @app.get("/memory/stats")
 async def memory_stats():
     """Return aggregate statistics for the memory subsystem."""
@@ -1135,6 +1499,39 @@ async def memory_stats():
         "by_project": [dict(row) for row in by_project],
         "by_category": [dict(row) for row in by_category],
         "latest": dict(latest) if latest else None,
+    }
+
+
+@app.get("/memory/global/stats")
+async def global_memory_stats():
+    """Return aggregate statistics for global memory."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM global_memory_items")
+        top_used = await conn.fetch(
+            """
+            SELECT memory_id, access_count, created_at
+            FROM global_memory_items
+            ORDER BY access_count DESC, created_at DESC
+            LIMIT 5
+            """
+        )
+        rate = await conn.fetchrow(
+            """
+            SELECT
+                COALESCE(SUM(access_count), 0) AS total_accesses,
+                COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400), 0) AS avg_age_days
+            FROM global_memory_items
+            """
+        )
+
+    avg_age = float(rate["avg_age_days"]) if rate else 0.0
+    total_accesses = int(rate["total_accesses"]) if rate else 0
+    overall_ratio = (total_accesses / avg_age) if avg_age > 0 else 0.0
+    return {
+        "total": total or 0,
+        "top_used": [dict(row) for row in top_used],
+        "overall_frequency_ratio": overall_ratio,
     }
 
 
@@ -1180,8 +1577,12 @@ async def add_memory_item(payload: MemoryAddRequest):
     if not payload.content.strip():
         raise HTTPException(status_code=400, detail="content is required")
 
-    embedder = get_text_embedder()
-    embedding = embedder.embed_query(payload.content)
+    try:
+        embedder = get_text_embedder()
+        embedding = embedder.embed_query(payload.content)
+    except Exception as exc:
+        logger.error("Failed to embed memory content", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {exc}") from exc
 
     pool = await get_db_pool()
     async with pool.acquire() as conn:
@@ -1242,6 +1643,65 @@ async def search_memory_text(payload: MemorySearchTextRequest):
             WHERE m.memory_id = ANY($1::uuid[])
             GROUP BY m.memory_id
         """,
+            memory_ids,
+        )
+        details = {}
+        for row in detail_rows:
+            record = dict(row)
+            record["memory_id"] = str(record["memory_id"])
+            details[record["memory_id"]] = record
+
+    response = []
+    for memory_id, similarity in matches:
+        info = details.get(memory_id)
+        if info:
+            info["similarity"] = similarity
+            response.append(info)
+    return response
+
+
+@app.post("/memory/global/search-text")
+async def search_global_memory_text(payload: MemorySearchTextRequest):
+    """Perform semantic search with server-side text embeddings (global)."""
+    if not payload.query.strip():
+        raise HTTPException(status_code=400, detail="query is required")
+
+    embedder = get_text_embedder()
+    query_embedding = embedder.embed_query(payload.query)
+
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        matches = await memory_manager.search(
+            conn,
+            embedding=query_embedding,
+            categories=payload.categories,
+            top_k=payload.top_k,
+            table="global_memory_items",
+            category_table="global_memory_categories",
+        )
+        if not matches:
+            return []
+
+        memory_ids = [uuid.UUID(m_id) for (m_id, _score) in matches]
+        detail_rows = await conn.fetch(
+            """
+            SELECT
+                m.memory_id,
+                m.content,
+                m.source_key,
+                m.source_project_id,
+                m.created_by,
+                m.created_at,
+                m.last_accessed_at,
+                m.access_count,
+                m.user_feedback,
+                COALESCE(array_remove(array_agg(c.name ORDER BY c.name), NULL), '{}'::text[]) AS categories
+            FROM global_memory_items m
+            LEFT JOIN global_memory_categories mc ON mc.memory_id = m.memory_id
+            LEFT JOIN categories c ON c.category_id = mc.category_id
+            WHERE m.memory_id = ANY($1::uuid[])
+            GROUP BY m.memory_id
+            """,
             memory_ids,
         )
         details = {}

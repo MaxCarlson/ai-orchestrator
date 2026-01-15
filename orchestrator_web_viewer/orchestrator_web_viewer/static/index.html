@@ -15,10 +15,8 @@
             <button class="nav-btn" data-view="orchestrator">Orchestrator</button>
             <button class="nav-btn" data-view="tasks">Knowledge Manager</button>
             <button class="nav-btn" data-view="memory">Memory</button>
-            <button class="nav-btn" data-view="stats">Stats</button>
-            <button class="nav-btn" data-view="database">Database</button>
-            <button class="nav-btn" data-view="lmstudio">LM Studio</button>
-            <button class="nav-btn" data-view="logs">Logs</button>
+            <button class="nav-btn" data-view="embeddings">Embeddings</button>
+            <button class="nav-btn" data-view="system">System</button>
         </nav>
         <div class="status-indicator">
             <span class="status-dot"></span>
@@ -115,7 +113,10 @@
                     <div class="control-card">
                         <h4>Queue Manual Task</h4>
                         <form id="manual-task-form">
-                            <input type="text" name="project_id" placeholder="Project ID" required>
+                            <label>
+                                Project
+                                <select name="project_id" id="manual-task-project" required></select>
+                            </label>
                             <input type="text" name="title" placeholder="Task Title" required>
                             <textarea name="description" placeholder="Task Description" rows="3" required></textarea>
                             <div class="form-row">
@@ -132,7 +133,8 @@
                                     <option value="5">Priority 5</option>
                                 </select>
                             </div>
-                            <input type="text" name="working_dir" placeholder="Working Directory (optional)">
+                            <input type="text" name="working_dir" id="manual-task-working-dir" placeholder="Working Directory (optional)" list="manual-task-paths">
+                            <datalist id="manual-task-paths"></datalist>
                             <button type="submit">Queue Task</button>
                             <p id="manual-task-status" class="microcopy"></p>
                         </form>
@@ -154,7 +156,23 @@
                 <div class="project-banner-actions">
                     <button id="project-track-btn">Configure Tracking</button>
                     <button id="project-untrack-btn" class="secondary-btn hidden">Stop Tracking</button>
+                    <div class="embed-controls">
+                        <label>
+                            Embedding Mode
+                            <select id="project-embed-mode">
+                                <option value="auto" selected>Auto</option>
+                                <option value="code">Code</option>
+                                <option value="text">Text</option>
+                            </select>
+                        </label>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="project-embed-global">
+                            Also index to global
+                        </label>
+                        <p id="project-embed-mode-desc" class="microcopy"></p>
+                    </div>
                     <button id="project-embed-btn">Start Embedding Run</button>
+                    <button id="project-upgrade-global-btn" class="secondary-btn hidden">Upgrade to Global</button>
                     <button id="project-delete-btn" class="danger-btn">Delete</button>
                 </div>
             </div>
@@ -389,245 +407,382 @@
             </div>
         </div>
 
-        <!-- Logs View -->
-        <div id="logs-view" class="view">
-            <h2>Logs & Telemetry</h2>
-            <div class="logs-page-controls">
-                <div class="logs-filter-group">
-                    <label>
-                        Min Level
-                        <select id="logs-level-filter">
-                            <option value="DEBUG">Debug</option>
-                            <option value="INFO" selected>Info</option>
-                            <option value="WARNING">Warning</option>
-                            <option value="ERROR">Error</option>
-                            <option value="CRITICAL">Critical</option>
-                        </select>
-                    </label>
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="logs-include-access">
-                        Include Access Logs
-                    </label>
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="logs-auto-refresh" checked>
-                        Auto Refresh
-                    </label>
-                    <button id="logs-refresh-btn" class="secondary-btn">Refresh</button>
-                </div>
-                <div class="server-log-controls">
-                    <label>
-                        Logger
-                        <select id="server-log-target"></select>
-                    </label>
-                    <label>
-                        Server Level
-                        <select id="server-log-level">
-                            <option value="DEBUG">Debug</option>
-                            <option value="INFO" selected>Info</option>
-                            <option value="WARNING">Warning</option>
-                            <option value="ERROR">Error</option>
-                            <option value="CRITICAL">Critical</option>
-                        </select>
-                    </label>
-                    <button id="apply-log-level-btn">Apply Level</button>
-                    <span id="log-level-status" class="microcopy"></span>
+        <!-- Embeddings View -->
+        <div id="embeddings-view" class="view">
+            <h2>Embeddings</h2>
+
+            <div class="section">
+                <h3>AST Parse Progress</h3>
+                <div class="inline-panel ast-progress-panel">
+                    <div class="form-row">
+                        <div>
+                            <strong id="ast-progress-status">Idle</strong>
+                            <p id="ast-progress-meta" class="microcopy">No active embedding run.</p>
+                        </div>
+                        <div class="microcopy" id="ast-progress-file"></div>
+                    </div>
+                    <canvas id="ast-progress-canvas" width="640" height="180"></canvas>
                 </div>
             </div>
-            <div id="logs-output" class="logs-container log-viewer">
-                <div class="empty-state">Logs will appear here.</div>
+
+            <div class="section">
+                <h3>Global Embedding Trigger</h3>
+                <form id="global-embed-form" class="inline-panel">
+                    <label>
+                        Repository Paths (one per line)
+                        <textarea id="global-embed-paths" rows="4" placeholder="/path/to/repo"></textarea>
+                    </label>
+                    <label>
+                        Mode
+                        <select id="global-embed-mode">
+                            <option value="auto" selected>Auto</option>
+                            <option value="code">Code</option>
+                            <option value="text">Text</option>
+                        </select>
+                    </label>
+                    <p id="global-embed-mode-desc" class="microcopy"></p>
+                    <div class="form-row">
+                        <input type="text" id="global-embed-code-model" placeholder="Code model (default: codebert-base)">
+                        <input type="text" id="global-embed-text-model" placeholder="Text model (default: bge-base-en-v1.5)">
+                    </div>
+                    <label class="checkbox-inline">
+                        <input type="checkbox" id="global-embed-force">
+                        Force reindex
+                    </label>
+                    <button type="submit">Run Global Embedding</button>
+                    <p id="global-embed-status" class="microcopy"></p>
+                </form>
+            </div>
+
+            <div class="section">
+                <h3>Global Embedding Search</h3>
+                <div class="memory-toolbar">
+                    <input type="search" id="global-search-query" placeholder="Search global embeddings...">
+                    <button id="global-search-btn">Search</button>
+                </div>
+                <div id="global-search-results" class="memory-list"></div>
+            </div>
+
+            <div class="section">
+                <h3>Global Embedding Stats</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Total Global Embeddings</h3>
+                        <div class="stat-value" id="global-embedding-total">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Overall Frequency Ratio</h3>
+                        <div class="stat-value" id="global-embedding-ratio">0</div>
+                    </div>
+                </div>
+                <div class="section">
+                    <h4>Top Used (Last Access)</h4>
+                    <div id="global-embedding-top" class="data-table"></div>
+                </div>
             </div>
         </div>
 
-        <!-- Stats View -->
-        <div id="stats-view" class="view">
-            <h2>System Stats</h2>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <h3>Docker Containers</h3>
-                    <div class="stat-value" id="stat-docker-containers">0</div>
+        <!-- System View -->
+        <div id="system-view" class="view">
+            <h2>System</h2>
+            <div class="subnav system-subnav">
+                <button class="subnav-btn active" data-system-view="stats">Overview</button>
+                <button class="subnav-btn" data-system-view="database">Database</button>
+                <button class="subnav-btn" data-system-view="lmstudio">LM Studio</button>
+                <button class="subnav-btn" data-system-view="logs">Logs</button>
+            </div>
+
+            <div class="system-view active" data-system-view="stats">
+                <h3>System Stats</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Docker Containers</h3>
+                        <div class="stat-value" id="stat-docker-containers">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Projects</h3>
+                        <div class="stat-value" id="stat-db-projects">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Tasks</h3>
+                        <div class="stat-value" id="stat-db-tasks">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Memory Items</h3>
+                        <div class="stat-value" id="stat-db-memory">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>LM Studio</h3>
+                        <div class="stat-value" id="stat-lmstudio-status">—</div>
+                    </div>
                 </div>
-                <div class="stat-card">
-                    <h3>Projects</h3>
-                    <div class="stat-value" id="stat-db-projects">0</div>
+
+                <div class="section">
+                    <h3>Docker Overview</h3>
+                    <div class="logs-controls">
+                        <button id="docker-refresh-btn">Refresh</button>
+                        <span id="docker-status" class="microcopy"></span>
+                    </div>
+                    <div id="docker-list" class="data-table"></div>
                 </div>
-                <div class="stat-card">
-                    <h3>Tasks</h3>
-                    <div class="stat-value" id="stat-db-tasks">0</div>
+
+                <div class="section">
+                    <h3>Database Overview</h3>
+                    <div class="logs-controls">
+                        <button id="db-refresh-btn">Refresh</button>
+                        <span id="db-status" class="microcopy"></span>
+                    </div>
+                    <div id="db-list" class="data-table"></div>
                 </div>
-                <div class="stat-card">
-                    <h3>Memory Items</h3>
-                    <div class="stat-value" id="stat-db-memory">0</div>
-                </div>
-                <div class="stat-card">
+
+                <div class="section">
                     <h3>LM Studio</h3>
-                    <div class="stat-value" id="stat-lmstudio-status">—</div>
+                    <div class="logs-controls">
+                        <button id="lmstudio-refresh-btn">Refresh</button>
+                        <span id="lmstudio-status" class="microcopy"></span>
+                    </div>
+                    <div id="lmstudio-list" class="data-table"></div>
                 </div>
             </div>
 
-            <div class="section">
-                <h3>Docker Overview</h3>
+            <div class="system-view" data-system-view="database">
+                <h3>Database Explorer</h3>
+                <div class="subnav">
+                    <button class="subnav-btn active" data-db-view="queries">Queries</button>
+                    <button class="subnav-btn" data-db-view="schema">Schema</button>
+                    <button class="subnav-btn" data-db-view="trends">Trends</button>
+                </div>
+                <div class="db-view active" data-db-view="queries">
                 <div class="logs-controls">
-                    <button id="docker-refresh-btn">Refresh</button>
-                    <span id="docker-status" class="microcopy"></span>
+                    <button id="db-query-refresh-btn">Run Default Queries</button>
+                    <span id="db-query-status" class="microcopy"></span>
                 </div>
-                <div id="docker-list" class="data-table"></div>
+                <div class="section">
+                    <h3>Recent Projects</h3>
+                    <div id="db-projects-list" class="data-table"></div>
+                </div>
+                <div class="section">
+                    <h3>Recent Tasks</h3>
+                    <div id="db-tasks-list" class="data-table"></div>
+                </div>
+                <div class="section">
+                    <h3>Recent Memories</h3>
+                    <div id="db-memories-list" class="data-table"></div>
+                </div>
+                <div class="section">
+                    <h3>Recent Code Chunks</h3>
+                    <div id="db-code-list" class="data-table"></div>
+                </div>
+                </div>
+                <div class="db-view" data-db-view="schema">
+                    <div class="db-schema-toolbar">
+                        <label>
+                            Database
+                            <select id="db-schema-database">
+                                <option value="core" selected>Core</option>
+                                <option value="memory">Memory</option>
+                                <option value="global">Global</option>
+                            </select>
+                        </label>
+                        <button id="db-schema-refresh" class="secondary-btn">Refresh</button>
+                        <span id="db-schema-status" class="microcopy"></span>
+                    </div>
+                    <div class="db-schema-panel">
+                        <svg id="db-schema-graph" viewBox="0 0 900 520" preserveAspectRatio="xMidYMid meet"></svg>
+                        <div id="db-schema-legend" class="db-schema-legend"></div>
+                    </div>
+                </div>
+                <div class="db-view" data-db-view="trends">
+                    <div class="db-trends-toolbar">
+                        <div class="db-trends-controls">
+                            <button id="db-trends-all" class="secondary-btn">All projects</button>
+                            <button id="db-trends-none" class="secondary-btn">None</button>
+                        </div>
+                        <span id="db-trends-status" class="microcopy"></span>
+                    </div>
+                    <div class="db-trends-layout">
+                        <div id="db-trends-projects" class="db-trends-projects"></div>
+                        <div class="db-trends-chart">
+                            <canvas id="db-trends-canvas" width="820" height="360"></canvas>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            <div class="section">
-                <h3>Database Overview</h3>
+            <div class="system-view" data-system-view="lmstudio">
+                <h3>LM Studio Control</h3>
                 <div class="logs-controls">
-                    <button id="db-refresh-btn">Refresh</button>
-                    <span id="db-status" class="microcopy"></span>
+                    <button id="lmstudio-refresh-all">Refresh</button>
+                    <span id="lmstudio-page-status" class="microcopy"></span>
                 </div>
-                <div id="db-list" class="data-table"></div>
-            </div>
-
-            <div class="section">
-                <h3>LM Studio</h3>
-                <div class="logs-controls">
-                    <button id="lmstudio-refresh-btn">Refresh</button>
-                    <span id="lmstudio-status" class="microcopy"></span>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Server Status</h3>
+                        <div class="stat-value" id="lmstudio-server-status">—</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Loaded Models</h3>
+                        <div class="stat-value" id="lmstudio-loaded-count">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Available Models</h3>
+                        <div class="stat-value" id="lmstudio-available-count">0</div>
+                    </div>
                 </div>
-                <div id="lmstudio-list" class="data-table"></div>
-            </div>
-        </div>
 
-        <!-- Database View -->
-        <div id="database-view" class="view">
-            <h2>Database Explorer</h2>
-            <div class="logs-controls">
-                <button id="db-query-refresh-btn">Run Default Queries</button>
-                <span id="db-query-status" class="microcopy"></span>
-            </div>
-            <div class="section">
-                <h3>Recent Projects</h3>
-                <div id="db-projects-list" class="data-table"></div>
-            </div>
-            <div class="section">
-                <h3>Recent Tasks</h3>
-                <div id="db-tasks-list" class="data-table"></div>
-            </div>
-            <div class="section">
-                <h3>Recent Memories</h3>
-                <div id="db-memories-list" class="data-table"></div>
-            </div>
-            <div class="section">
-                <h3>Recent Code Chunks</h3>
-                <div id="db-code-list" class="data-table"></div>
-            </div>
-        </div>
-
-        <!-- LM Studio View -->
-        <div id="lmstudio-view" class="view">
-            <h2>LM Studio Control</h2>
-            <div class="logs-controls">
-                <button id="lmstudio-refresh-all">Refresh</button>
-                <span id="lmstudio-page-status" class="microcopy"></span>
-            </div>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <h3>Server Status</h3>
-                    <div class="stat-value" id="lmstudio-server-status">—</div>
-                </div>
-                <div class="stat-card">
+                <div class="section">
                     <h3>Loaded Models</h3>
-                    <div class="stat-value" id="lmstudio-loaded-count">0</div>
+                    <div id="lmstudio-loaded-list" class="data-table"></div>
                 </div>
-                <div class="stat-card">
+
+                <div class="section">
                     <h3>Available Models</h3>
-                    <div class="stat-value" id="lmstudio-available-count">0</div>
+                    <div class="logs-controls">
+                        <button id="lmstudio-models-refresh">Reload List</button>
+                    </div>
+                    <div id="lmstudio-models-list" class="data-table"></div>
+                </div>
+
+                <div class="section">
+                    <h3>Load Model</h3>
+                    <form id="lmstudio-load-form" class="inline-panel">
+                        <input type="text" id="lmstudio-load-path" placeholder="Model path or key" required>
+                        <div class="form-row">
+                            <input type="text" id="lmstudio-load-identifier" placeholder="Identifier (optional)">
+                            <input type="text" id="lmstudio-load-gpu" placeholder="GPU offload (max/off/0-1)">
+                        </div>
+                        <div class="form-row">
+                            <input type="number" id="lmstudio-load-ctx" placeholder="Context length">
+                            <input type="number" id="lmstudio-load-ttl" placeholder="TTL seconds">
+                        </div>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="lmstudio-load-exact">
+                            Exact match
+                        </label>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="lmstudio-load-estimate">
+                            Estimate only
+                        </label>
+                        <button type="submit">Load</button>
+                        <p id="lmstudio-load-status" class="microcopy"></p>
+                    </form>
+                </div>
+
+                <div class="section">
+                    <h3>Unload Model</h3>
+                    <form id="lmstudio-unload-form" class="inline-panel">
+                        <input type="text" id="lmstudio-unload-identifier" placeholder="Identifier (leave blank for only model)">
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="lmstudio-unload-all">
+                            Unload all
+                        </label>
+                        <button type="submit">Unload</button>
+                        <p id="lmstudio-unload-status" class="microcopy"></p>
+                    </form>
+                </div>
+
+                <div class="section">
+                    <h3>Download Model</h3>
+                    <form id="lmstudio-get-form" class="inline-panel">
+                        <input type="text" id="lmstudio-get-name" placeholder="Model name (e.g. llama-3.1-8b@q4_k_m)" required>
+                        <div class="form-row">
+                            <input type="number" id="lmstudio-get-limit" placeholder="Limit">
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="lmstudio-get-gguf">
+                                GGUF
+                            </label>
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="lmstudio-get-mlx">
+                                MLX
+                            </label>
+                        </div>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="lmstudio-get-show-all">
+                            Always show all results
+                        </label>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="lmstudio-get-show-download">
+                            Always show download options
+                        </label>
+                        <button type="submit">Download</button>
+                        <p id="lmstudio-get-status" class="microcopy"></p>
+                    </form>
+                </div>
+
+                <div class="section">
+                    <h3>Server Controls</h3>
+                    <div class="logs-controls">
+                        <button id="lmstudio-server-start">Start Server</button>
+                        <button id="lmstudio-server-stop" class="danger-btn">Stop Server</button>
+                        <span id="lmstudio-server-status-text" class="microcopy"></span>
+                    </div>
                 </div>
             </div>
 
-            <div class="section">
-                <h3>Loaded Models</h3>
-                <div id="lmstudio-loaded-list" class="data-table"></div>
-            </div>
-
-            <div class="section">
-                <h3>Available Models</h3>
-                <div class="logs-controls">
-                    <button id="lmstudio-models-refresh">Reload List</button>
+            <div class="system-view" data-system-view="logs">
+                <h3>Logs & Telemetry</h3>
+                <div class="logs-page-controls">
+                    <div class="logs-filter-group">
+                        <label>
+                            Min Level
+                            <select id="logs-level-filter">
+                                <option value="DEBUG">Debug</option>
+                                <option value="INFO" selected>Info</option>
+                                <option value="WARNING">Warning</option>
+                                <option value="ERROR">Error</option>
+                                <option value="CRITICAL">Critical</option>
+                            </select>
+                        </label>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="logs-include-access">
+                            Include Access Logs
+                        </label>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="logs-auto-refresh" checked>
+                            Auto Refresh
+                        </label>
+                        <button id="logs-refresh-btn" class="secondary-btn">Refresh</button>
+                    </div>
+                    <div class="server-log-controls">
+                        <label>
+                            Logger
+                            <select id="server-log-target"></select>
+                        </label>
+                        <label>
+                            Server Level
+                            <select id="server-log-level">
+                                <option value="DEBUG">Debug</option>
+                                <option value="INFO" selected>Info</option>
+                                <option value="WARNING">Warning</option>
+                                <option value="ERROR">Error</option>
+                                <option value="CRITICAL">Critical</option>
+                            </select>
+                        </label>
+                        <button id="apply-log-level-btn">Apply Level</button>
+                        <span id="log-level-status" class="microcopy"></span>
+                    </div>
                 </div>
-                <div id="lmstudio-models-list" class="data-table"></div>
-            </div>
-
-            <div class="section">
-                <h3>Load Model</h3>
-                <form id="lmstudio-load-form" class="inline-panel">
-                    <input type="text" id="lmstudio-load-path" placeholder="Model path or key" required>
-                    <div class="form-row">
-                        <input type="text" id="lmstudio-load-identifier" placeholder="Identifier (optional)">
-                        <input type="text" id="lmstudio-load-gpu" placeholder="GPU offload (max/off/0-1)">
-                    </div>
-                    <div class="form-row">
-                        <input type="number" id="lmstudio-load-ctx" placeholder="Context length">
-                        <input type="number" id="lmstudio-load-ttl" placeholder="TTL seconds">
-                    </div>
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="lmstudio-load-exact">
-                        Exact match
-                    </label>
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="lmstudio-load-estimate">
-                        Estimate only
-                    </label>
-                    <button type="submit">Load</button>
-                    <p id="lmstudio-load-status" class="microcopy"></p>
-                </form>
-            </div>
-
-            <div class="section">
-                <h3>Unload Model</h3>
-                <form id="lmstudio-unload-form" class="inline-panel">
-                    <input type="text" id="lmstudio-unload-identifier" placeholder="Identifier (leave blank for only model)">
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="lmstudio-unload-all">
-                        Unload all
-                    </label>
-                    <button type="submit">Unload</button>
-                    <p id="lmstudio-unload-status" class="microcopy"></p>
-                </form>
-            </div>
-
-            <div class="section">
-                <h3>Download Model</h3>
-                <form id="lmstudio-get-form" class="inline-panel">
-                    <input type="text" id="lmstudio-get-name" placeholder="Model name (e.g. llama-3.1-8b@q4_k_m)" required>
-                    <div class="form-row">
-                        <input type="number" id="lmstudio-get-limit" placeholder="Limit">
-                        <label class="checkbox-inline">
-                            <input type="checkbox" id="lmstudio-get-gguf">
-                            GGUF
-                        </label>
-                        <label class="checkbox-inline">
-                            <input type="checkbox" id="lmstudio-get-mlx">
-                            MLX
-                        </label>
-                    </div>
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="lmstudio-get-show-all">
-                        Always show all results
-                    </label>
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="lmstudio-get-show-download">
-                        Always show download options
-                    </label>
-                    <button type="submit">Download</button>
-                    <p id="lmstudio-get-status" class="microcopy"></p>
-                </form>
-            </div>
-
-            <div class="section">
-                <h3>Server Controls</h3>
-                <div class="logs-controls">
-                    <button id="lmstudio-server-start">Start Server</button>
-                    <button id="lmstudio-server-stop" class="danger-btn">Stop Server</button>
-                    <span id="lmstudio-server-status-text" class="microcopy"></span>
+                <div id="logs-output" class="logs-container log-viewer">
+                    <div class="empty-state">Logs will appear here.</div>
                 </div>
             </div>
         </div>
     </main>
+
+    <div id="system-meter" class="system-meter">
+        <div class="meter-item">
+            <span class="meter-label">CPU</span>
+            <span id="meter-cpu" class="meter-value">--</span>
+        </div>
+        <div class="meter-item">
+            <span class="meter-label">RAM</span>
+            <span id="meter-ram" class="meter-value">--</span>
+        </div>
+        <div class="meter-item">
+            <span class="meter-label">GPU</span>
+            <span id="meter-gpu" class="meter-value">--</span>
+        </div>
+    </div>
 
     <script src="/static/app.js"></script>
 </body>

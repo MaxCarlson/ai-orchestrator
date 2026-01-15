@@ -1,19 +1,19 @@
 ==> docker compose ps
-NAME              IMAGE                          COMMAND                  SERVICE        CREATED         STATUS                     PORTS
-km-koweb          ai-orchestrator-koweb          "koweb"                  koweb          5 minutes ago   Up 5 minutes               0.0.0.0:3001->3001/tcp, [::]:3001->3001/tcp
-km-orchestrator   ai-orchestrator-orchestrator   "python main.py"         orchestrator   5 minutes ago   Up 5 minutes (unhealthy)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp
-km-postgres       pgvector/pgvector:pg16         "docker-entrypoint.s…"   postgres       5 minutes ago   Up 5 minutes (healthy)     0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp
+NAME              IMAGE                          COMMAND                  SERVICE        CREATED         STATUS                   PORTS
+km-koweb          ai-orchestrator-koweb          "koweb"                  koweb          4 minutes ago   Up 4 minutes             0.0.0.0:3001->3001/tcp, [::]:3001->3001/tcp
+km-orchestrator   ai-orchestrator-orchestrator   "python main.py"         orchestrator   4 minutes ago   Up 4 minutes (healthy)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp
+km-postgres       pgvector/pgvector:pg16         "docker-entrypoint.s…"   postgres       4 minutes ago   Up 4 minutes (healthy)   0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp
 
 ==> docker ps
-CONTAINER ID   IMAGE                          COMMAND                  CREATED         STATUS                     PORTS                                         NAMES
-381d174afc1e   ai-orchestrator-koweb          "koweb"                  5 minutes ago   Up 5 minutes               0.0.0.0:3001->3001/tcp, [::]:3001->3001/tcp   km-koweb
-5a5eaa5fc710   ai-orchestrator-orchestrator   "python main.py"         5 minutes ago   Up 5 minutes (unhealthy)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp   km-orchestrator
-0595549ffec6   pgvector/pgvector:pg16         "docker-entrypoint.s…"   5 minutes ago   Up 5 minutes (healthy)     0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp   km-postgres
+CONTAINER ID   IMAGE                          COMMAND                  CREATED         STATUS                   PORTS                                         NAMES
+6a2fd140dd80   ai-orchestrator-koweb          "koweb"                  4 minutes ago   Up 4 minutes             0.0.0.0:3001->3001/tcp, [::]:3001->3001/tcp   km-koweb
+17e9667e877d   ai-orchestrator-orchestrator   "python main.py"         4 minutes ago   Up 4 minutes (healthy)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp   km-orchestrator
+929a8ba85a02   pgvector/pgvector:pg16         "docker-entrypoint.s…"   4 minutes ago   Up 4 minutes (healthy)   0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp   km-postgres
 
 ==> docker images (top 20)
 IMAGE                                           ID             DISK USAGE   CONTENT SIZE   EXTRA
-ai-orchestrator-koweb:latest                    5e41205bee74        298MB         71.4MB   U    
-ai-orchestrator-orchestrator:latest             33274a460ff1       12.2GB         4.35GB   U    
+ai-orchestrator-koweb:latest                    4be74c9a06c0        298MB         71.4MB   U    
+ai-orchestrator-orchestrator:latest             c78203391e22       12.2GB         4.35GB   U    
 alpine:latest                                   51183f2cfa63         13MB         3.86MB   U    
 artifision/live-charts-docker-extension:1.2.1   c3c57839276b       14.3MB          4.4MB        
 dpage/pgadmin4:9.11                             50700ac17936        823MB          185MB   U    
@@ -40,7 +40,7 @@ d2446dcf54b2   bridge                                                        bri
 c2b402698b53   docker_km-network                                             bridge    local
 47b0ebf8ecde   drewsk_docker-sql-extension-desktop-extension_default         bridge    local
 274331685b1a   host                                                          host      local
-cfab0fbda827   km-network                                                    bridge    local
+25906439a0c2   km-network                                                    bridge    local
 03f9de1bd8e4   mochoa_pgadmin4-docker-extension-desktop-extension_default    bridge    local
 b80a49692410   none                                                          null      local
 59da357ae47c   rw4lll_openwebui-docker-extension-desktop-extension_default   bridge    local

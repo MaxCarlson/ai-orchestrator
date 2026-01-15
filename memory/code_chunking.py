@@ -30,6 +30,14 @@ class CodeChunk:
     language: str
 
 
+@dataclass
+class ChunkStats:
+    file_path: str
+    file_type: str
+    ast_status: Optional[str]
+    chunk_count: int
+
+
 def _hash_content(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -40,13 +48,13 @@ def _slice_lines(lines: List[str], start_line: int, end_line: int) -> str:
     return "\n".join(lines[start_idx:end_idx])
 
 
-def _chunk_python(content: str, file_path: Path) -> List[CodeChunk]:
+def _chunk_python(content: str, file_path: Path) -> tuple[List[CodeChunk], Optional[str]]:
     chunks: List[CodeChunk] = []
     lines = content.splitlines()
     try:
         tree = ast.parse(content)
     except SyntaxError:
-        return []
+        return [], "failure"
 
     for node in tree.body:
         if isinstance(node, ast.FunctionDef):
@@ -85,7 +93,7 @@ def _chunk_python(content: str, file_path: Path) -> List[CodeChunk]:
             )
 
     if chunks:
-        return chunks
+        return chunks, "success"
 
     # Fallback for small or module-only files.
     if content.strip():
@@ -102,7 +110,7 @@ def _chunk_python(content: str, file_path: Path) -> List[CodeChunk]:
                 language="python",
             )
         )
-    return chunks
+    return chunks, "success"
 
 
 def _chunk_text(content: str, file_path: Path, max_chars: int = 2000) -> List[CodeChunk]:
@@ -131,7 +139,7 @@ def _chunk_text(content: str, file_path: Path, max_chars: int = 2000) -> List[Co
     return chunks
 
 
-def chunk_file(path: Path) -> List[CodeChunk]:
+def chunk_file(path: Path, include_text: bool = True) -> List[CodeChunk]:
     """Chunk a file into symbol-level CodeChunks when possible."""
     if not path.is_file():
         return []
@@ -143,8 +151,30 @@ def chunk_file(path: Path) -> List[CodeChunk]:
 
     suffix = path.suffix.lower()
     if suffix in PYTHON_EXTENSIONS:
-        return _chunk_python(content, path)
-    if suffix in TEXT_EXTENSIONS:
+        chunks, _ = _chunk_python(content, path)
+        return chunks
+    if suffix in TEXT_EXTENSIONS and include_text:
         return _chunk_text(content, path)
     return []
 
+
+def chunk_file_with_stats(path: Path, include_text: bool = True) -> tuple[List[CodeChunk], ChunkStats]:
+    """Chunk a file and return basic parsing stats."""
+    if not path.is_file():
+        return [], ChunkStats(str(path), "unsupported", None, 0)
+
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return [], ChunkStats(str(path), "unsupported", None, 0)
+
+    suffix = path.suffix.lower()
+    if suffix in PYTHON_EXTENSIONS:
+        chunks, ast_status = _chunk_python(content, path)
+        return chunks, ChunkStats(str(path), "python", ast_status, len(chunks))
+    if suffix in TEXT_EXTENSIONS:
+        if not include_text:
+            return [], ChunkStats(str(path), "text", None, 0)
+        chunks = _chunk_text(content, path)
+        return chunks, ChunkStats(str(path), "text", None, len(chunks))
+    return [], ChunkStats(str(path), "unsupported", None, 0)

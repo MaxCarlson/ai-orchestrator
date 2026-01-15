@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from typing import Any, Dict, List
 
 import asyncpg
@@ -10,6 +11,8 @@ from fastapi import APIRouter, HTTPException
 
 
 router = APIRouter()
+_last_cpu_total: float | None = None
+_last_cpu_idle: float | None = None
 
 
 def _db_config() -> Dict[str, Any]:
@@ -20,6 +23,69 @@ def _db_config() -> Dict[str, Any]:
         "password": os.getenv("KO_WEB_POSTGRES_PASSWORD", os.getenv("POSTGRES_PASSWORD", "")),
         "database": os.getenv("KO_WEB_POSTGRES_DB", os.getenv("POSTGRES_DB", "knowledge_manager")),
     }
+
+
+def _read_cpu_times() -> tuple[float, float] | None:
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as handle:
+            first = handle.readline()
+        if not first.startswith("cpu "):
+            return None
+        parts = first.split()
+        values = [float(value) for value in parts[1:]]
+        if len(values) < 4:
+            return None
+        idle = values[3] + (values[4] if len(values) > 4 else 0.0)
+        total = sum(values)
+        return total, idle
+    except Exception:
+        return None
+
+
+def _read_meminfo() -> tuple[int, int]:
+    total_kb = 0
+    available_kb = 0
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    total_kb = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    available_kb = int(line.split()[1])
+    except Exception:
+        return 0, 0
+    used_kb = max(total_kb - available_kb, 0)
+    return used_kb, total_kb
+
+
+def _read_gpu_stats() -> list[dict]:
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    rows = []
+    for line in result.stdout.strip().splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3:
+            continue
+        rows.append({
+            "utilization": int(parts[0]) if parts[0].isdigit() else None,
+            "mem_used_mb": int(parts[1]) if parts[1].isdigit() else None,
+            "mem_total_mb": int(parts[2]) if parts[2].isdigit() else None,
+        })
+    return rows
 
 
 async def _fetch_db_stats() -> Dict[str, Any]:
@@ -202,4 +268,163 @@ async def db_queries():
         "tasks": _normalize(tasks),
         "memories": _normalize(memories),
         "code_chunks": _normalize(code_chunks),
+    }
+
+
+def _table_group(table_name: str) -> str:
+    if table_name.startswith("global_"):
+        return "global"
+    memory_tables = {
+        "memory_items",
+        "memory_categories",
+        "categories",
+        "code_chunks",
+        "embedding_runs",
+    }
+    if table_name in memory_tables:
+        return "memory"
+    return "core"
+
+
+def _table_label(table_name: str) -> str:
+    return table_name.replace("_", " ").title()
+
+
+@router.get("/db-schema")
+async def db_schema():
+    """Return database schema metadata for visualization."""
+    cfg = _db_config()
+    try:
+        conn = await asyncpg.connect(**cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database connection failed: {exc}") from exc
+
+    try:
+        tables = await conn.fetch(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            ORDER BY table_name
+            """
+        )
+        fks = await conn.fetch(
+            """
+            SELECT
+                tc.table_name AS table_name,
+                ccu.table_name AS foreign_table_name
+            FROM information_schema.table_constraints AS tc
+            JOIN information_schema.constraint_column_usage AS ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+              AND tc.table_schema = 'public'
+            """
+        )
+    finally:
+        await conn.close()
+
+    table_rows = [row["table_name"] for row in tables]
+    table_items = [
+        {
+            "name": name,
+            "label": _table_label(name),
+            "group": _table_group(name),
+        }
+        for name in table_rows
+    ]
+
+    edges = []
+    for fk in fks:
+        source = fk["table_name"]
+        target = fk["foreign_table_name"]
+        if source not in table_rows or target not in table_rows:
+            continue
+        group = _table_group(source)
+        if _table_group(target) != group:
+            continue
+        edges.append({"from": source, "to": target, "group": group})
+
+    return {
+        "tables": table_items,
+        "edges": edges,
+        "groups": [
+            {"id": "core", "label": "Core tables"},
+            {"id": "memory", "label": "Memory tables"},
+            {"id": "global", "label": "Global tables"},
+        ],
+    }
+
+
+@router.get("/db-trends")
+async def db_trends():
+    """Return per-project counts for trend visualization."""
+    cfg = _db_config()
+    try:
+        conn = await asyncpg.connect(**cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database connection failed: {exc}") from exc
+
+    try:
+        projects = await conn.fetch(
+            "SELECT id, name FROM projects ORDER BY name"
+        )
+        tasks = await conn.fetch(
+            "SELECT project_id, COUNT(*) AS count FROM tasks GROUP BY project_id"
+        )
+        memories = await conn.fetch(
+            "SELECT project_id, COUNT(*) AS count FROM memory_items GROUP BY project_id"
+        )
+        code_chunks = []
+        exists = await conn.fetchval("SELECT to_regclass('public.code_chunks')")
+        if exists:
+            code_chunks = await conn.fetch(
+                "SELECT project_id, COUNT(*) AS count FROM code_chunks GROUP BY project_id"
+            )
+    finally:
+        await conn.close()
+
+    task_map = {str(row["project_id"]): row["count"] for row in tasks}
+    memory_map = {str(row["project_id"]): row["count"] for row in memories}
+    chunk_map = {str(row["project_id"]): row["count"] for row in code_chunks}
+
+    results = []
+    for row in projects:
+        project_id = str(row["id"])
+        results.append({
+            "id": project_id,
+            "name": row["name"],
+            "tasks": int(task_map.get(project_id, 0) or 0),
+            "memories": int(memory_map.get(project_id, 0) or 0),
+            "code_chunks": int(chunk_map.get(project_id, 0) or 0),
+        })
+
+    return {"projects": results}
+
+
+@router.get("/telemetry")
+async def telemetry():
+    """Return lightweight CPU/RAM/GPU telemetry for the system meter."""
+    global _last_cpu_total, _last_cpu_idle
+    cpu_percent = None
+    current = _read_cpu_times()
+    if current:
+        total, idle = current
+        if _last_cpu_total is not None and _last_cpu_idle is not None:
+            delta_total = total - _last_cpu_total
+            delta_idle = idle - _last_cpu_idle
+            if delta_total > 0:
+                cpu_percent = (1.0 - (delta_idle / delta_total)) * 100.0
+        _last_cpu_total = total
+        _last_cpu_idle = idle
+
+    mem_used_kb, mem_total_kb = _read_meminfo()
+    mem_used_mb = int(mem_used_kb / 1024) if mem_used_kb else 0
+    mem_total_mb = int(mem_total_kb / 1024) if mem_total_kb else 0
+
+    return {
+        "cpu_percent": cpu_percent,
+        "mem_used_mb": mem_used_mb,
+        "mem_total_mb": mem_total_mb,
+        "gpu": _read_gpu_stats(),
     }

@@ -85,14 +85,20 @@ async def initialize_schema(conn: asyncpg.Connection) -> None:
     # Create tables
     await conn.execute(models.CREATE_SYSTEM_TABLE)
     await conn.execute(models.CREATE_MEMORY_TABLE)
+    await conn.execute(models.CREATE_GLOBAL_MEMORY_TABLE)
     await conn.execute(models.CREATE_CATEGORY_TABLE)
     await conn.execute(models.CREATE_MEMORY_CATEGORY_TABLE)
+    await conn.execute(models.CREATE_GLOBAL_MEMORY_CATEGORY_TABLE)
     await conn.execute(models.CREATE_CODE_CHUNKS_TABLE)
+    await conn.execute(models.CREATE_GLOBAL_CODE_CHUNKS_TABLE)
+    await conn.execute(models.CREATE_EMBEDDING_RUNS_TABLE)
     await conn.execute(models.ALTER_MEMORY_EMBEDDING_DIMENSION)
     await conn.execute(models.UPSERT_DEFAULT_SYSTEM)
     # Create embedding index
     await conn.execute(models.CREATE_EMBEDDING_INDEX)
+    await conn.execute(models.CREATE_GLOBAL_EMBEDDING_INDEX)
     await conn.execute(models.CREATE_CODE_CHUNKS_INDEXES)
+    await conn.execute(models.CREATE_GLOBAL_CODE_CHUNKS_INDEXES)
 
 
 class MemoryManager:
@@ -120,6 +126,8 @@ class MemoryManager:
         system_id: Optional[str] = None,
         created_by: str,
         categories: Optional[Sequence[str]] = None,
+        table: str = "memory_items",
+        category_table: str = "memory_categories",
     ) -> str:
         """Insert a new memory item and return its generated ID.
 
@@ -145,8 +153,8 @@ class MemoryManager:
         async with conn.transaction():
             # Insert memory item and retrieve its ID
             record = await conn.fetchrow(
-                """
-                INSERT INTO memory_items (
+                f"""
+                INSERT INTO {table} (
                     content, embedding, project_id, task_id, system_id,
                     created_by
                 ) VALUES ($1, $2, $3, $4, $5, $6)
@@ -174,8 +182,8 @@ class MemoryManager:
                     )
                     category_id: str = cat["category_id"]
                     await conn.execute(
-                        """
-                        INSERT INTO memory_categories (memory_id, category_id)
+                        f"""
+                        INSERT INTO {category_table} (memory_id, category_id)
                         VALUES ($1, $2)
                         ON CONFLICT (memory_id, category_id) DO NOTHING
                         """,
@@ -194,6 +202,8 @@ class MemoryManager:
         task_id: Optional[str] = None,
         categories: Optional[Sequence[str]] = None,
         top_k: int = 5,
+        table: str = "memory_items",
+        category_table: str = "memory_categories",
     ) -> List[Tuple[str, float]]:
         """Perform a similarity search for a given embedding.
 
@@ -229,7 +239,7 @@ class MemoryManager:
                 """
                 memory_id IN (
                     SELECT mc.memory_id
-                    FROM memory_categories mc
+                    FROM {category_table} mc
                     JOIN categories c ON c.category_id = mc.category_id
                     WHERE c.name = ANY($2::text[])
                     GROUP BY mc.memory_id
@@ -237,11 +247,11 @@ class MemoryManager:
                 )
                 """
             )
-            filters.append(category_filter)
+            filters.append(category_filter.format(category_table=category_table))
         filter_sql = " AND ".join(filters) if filters else None
         results = await self.store.query(
             conn=conn,
-            table="memory_items",
+            table=table,
             vector=np.asarray(embedding, dtype=np.float32),
             filters=filter_sql,
             top_k=top_k,
@@ -249,8 +259,8 @@ class MemoryManager:
         # Update access counters and timestamps asynchronously
         for memory_id, _similarity in results:
             await conn.execute(
-                """
-                UPDATE memory_items
+                f"""
+                UPDATE {table}
                 SET access_count = access_count + 1,
                     last_accessed_at = NOW()
                 WHERE memory_id = $1

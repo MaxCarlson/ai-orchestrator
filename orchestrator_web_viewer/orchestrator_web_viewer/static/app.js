@@ -10,12 +10,16 @@ let selectedTask = null;
 let memorySearchTerm = '';
 let memorySemanticActive = false;
 let memorySemanticResults = [];
+let dbSchemaCache = null;
+let dbTrendsCache = null;
+let currentSystemView = 'stats';
 let projectTracking = {};
 let availableModels = [];
 let projectsCache = [];
 let selectedTaskDetails = null;
 let trackingErrorMessage = '';
 let lastTrackingErrorAt = 0;
+let astProgressTimer = null;
 const TRACKING_ERROR_COOLDOWN_MS = 15000;
 const TASK_STATUSES = [
     { value: 'todo', label: 'Todo' },
@@ -56,6 +60,11 @@ let taskSort = {
     field: 'updated',
     direction: TASK_SORT_DEFAULTS.updated,
 };
+const EMBEDDING_MODE_DESCRIPTIONS = {
+    auto: 'Auto detects code vs text, parses AST for code, and indexes both.',
+    code: 'Code-only: symbol-aware chunks with AST parsing (CodeBERT).',
+    text: 'Text-only: documents and prose (BGE base).',
+};
 
 function logUiEvent(eventType, details = {}) {
     const payload = {
@@ -74,6 +83,18 @@ function logUiEvent(eventType, details = {}) {
     });
 }
 
+function normalizeErrorDetail(detail) {
+    if (!detail) return '';
+    if (typeof detail === 'string') return detail;
+    if (detail.detail) return detail.detail;
+    if (detail.error) return detail.error;
+    try {
+        return JSON.stringify(detail);
+    } catch (error) {
+        return String(detail);
+    }
+}
+
 function priorityToColor(priority = 5) {
     const value = Math.max(1, Math.min(10, Number(priority) || 5));
     const t = (value - 1) / 9;
@@ -83,7 +104,53 @@ function priorityToColor(priority = 5) {
     return `rgb(${r}, ${g}, ${b})`;
 }
 
-function buildTaskHierarchy(tasks = [], rootComparator = null) {
+function formatTimeSince(isoString) {
+    if (!isoString) return 'Never';
+    const time = new Date(isoString).getTime();
+    if (Number.isNaN(time)) return 'Unknown';
+    const diffMs = Date.now() - time;
+    const minutes = Math.floor(diffMs / 60000);
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+}
+
+function setEmbeddingModeDescription(selectEl, descEl) {
+    if (!selectEl || !descEl) return;
+    const mode = selectEl.value || 'auto';
+    descEl.textContent = EMBEDDING_MODE_DESCRIPTIONS[mode] || '';
+}
+
+function extractEmbeddingStats(stats) {
+    if (!stats) return null;
+    const code = stats.code?.project || stats.code?.global || stats.code || null;
+    const text = stats.text?.summary || stats.text || null;
+    return { code, text };
+}
+
+function formatEmbeddingStats(stats) {
+    const extracted = extractEmbeddingStats(stats);
+    if (!extracted) return '';
+    const parts = [];
+    if (extracted.code) {
+        const astOk = extracted.code.ast_success ?? 0;
+        const astFail = extracted.code.ast_failure ?? 0;
+        const indexed = extracted.code.chunks_indexed ?? 0;
+        const skipped = extracted.code.chunks_skipped ?? 0;
+        parts.push(`AST: ${astOk} ok / ${astFail} fail`);
+        parts.push(`Code chunks: ${indexed} indexed / ${skipped} skipped`);
+    }
+    if (extracted.text) {
+        const textIndexed = extracted.text.chunks_indexed ?? 0;
+        parts.push(`Text chunks: ${textIndexed} indexed`);
+    }
+    return parts.join(' · ');
+}
+
+function buildTaskHierarchy(tasks = [], rootComparator = null, visibleIds = null) {
     const taskMap = new Map();
     tasks.forEach((task, order) => {
         taskMap.set(task.id, { ...task, children: [], order });
@@ -111,13 +178,15 @@ function buildTaskHierarchy(tasks = [], rootComparator = null) {
         nodes.forEach((node, index) => {
             const children = [...node.children].sort((a, b) => a.order - b.order);
             const isLast = index === nodes.length - 1;
-            ordered.push({
-                task: node,
-                depth,
-                isLast,
-                ancestorContinuations: ancestry,
-                hasChildren: children.length > 0,
-            });
+            if (!visibleIds || visibleIds.has(node.id)) {
+                ordered.push({
+                    task: node,
+                    depth,
+                    isLast,
+                    ancestorContinuations: ancestry,
+                    hasChildren: children.length > 0,
+                });
+            }
             if (children.length) {
                 traverse(children, depth + 1, [...ancestry, !isLast]);
             }
@@ -194,7 +263,12 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeProjectSortControls();
     initializeTaskSortControls();
     setupStatsControls();
+    setupDatabaseExplorerControls();
+    setupSystemControls();
     setupLmstudioControls();
+    initializeEmbeddingControls();
+    initializeEmbeddingsView();
+    startSystemMeter();
 
     // Refresh data every 5 seconds
     setInterval(refreshCurrentView, 5000);
@@ -249,17 +323,11 @@ function switchView(view, reason = 'user') {
         case 'memory':
             loadMemoryView();
             break;
-        case 'stats':
-            loadSystemStats();
+        case 'embeddings':
+            loadEmbeddingsView();
             break;
-        case 'database':
-            loadDatabaseView();
-            break;
-        case 'lmstudio':
-            loadLmstudioView();
-            break;
-        case 'logs':
-            loadLogsView();
+        case 'system':
+            switchSystemView(currentSystemView, true);
             break;
     }
 }
@@ -284,19 +352,28 @@ function refreshCurrentView() {
         case 'memory':
             loadMemoryView();
             break;
-        case 'logs':
-            if (logViewerSettings.autoRefresh) {
-                loadLogEntries();
+        case 'embeddings':
+            loadEmbeddingsView();
+            break;
+        case 'system':
+            switch (currentSystemView) {
+                case 'stats':
+                    loadSystemStats();
+                    break;
+                case 'database':
+                    loadDatabaseView();
+                    break;
+                case 'lmstudio':
+                    loadLmstudioView();
+                    break;
+                case 'logs':
+                    if (logViewerSettings.autoRefresh) {
+                        loadLogEntries();
+                    }
+                    break;
+                default:
+                    break;
             }
-            break;
-        case 'stats':
-            loadSystemStats();
-            break;
-        case 'database':
-            loadDatabaseView();
-            break;
-        case 'lmstudio':
-            loadLmstudioView();
             break;
         default:
             break;
@@ -384,6 +461,9 @@ async function loadOrchestrator() {
     await loadWorkers();
     await loadTaskQueue();
     await loadModelControls();
+    if (!projectsCache.length) {
+        await loadProjects();
+    }
 }
 
 function setupModelControls() {
@@ -458,6 +538,7 @@ function setupMemoryControls() {
 function initializeTrackingControls() {
     const configureBtn = document.getElementById('project-track-btn');
     const embedBtn = document.getElementById('project-embed-btn');
+    const upgradeBtn = document.getElementById('project-upgrade-global-btn');
     const untrackBtn = document.getElementById('project-untrack-btn');
     const deleteBtn = document.getElementById('project-delete-btn');
 
@@ -466,6 +547,9 @@ function initializeTrackingControls() {
     }
     if (embedBtn) {
         embedBtn.addEventListener('click', startEmbeddingRun);
+    }
+    if (upgradeBtn) {
+        upgradeBtn.addEventListener('click', upgradeProjectToGlobal);
     }
     if (untrackBtn) {
         untrackBtn.addEventListener('click', stopProjectTracking);
@@ -529,6 +613,36 @@ function setupStatsControls() {
     if (lmstudioBtn) {
         lmstudioBtn.addEventListener('click', loadLmstudioStats);
     }
+}
+
+function setupDatabaseExplorerControls() {
+    const buttons = document.querySelectorAll('.subnav-btn[data-db-view]');
+    buttons.forEach((button) => {
+        button.addEventListener('click', () => switchDbView(button.dataset.dbView || 'queries'));
+    });
+    const schemaRefresh = document.getElementById('db-schema-refresh');
+    if (schemaRefresh) {
+        schemaRefresh.addEventListener('click', loadDbSchema);
+    }
+    const schemaSelect = document.getElementById('db-schema-database');
+    if (schemaSelect) {
+        schemaSelect.addEventListener('change', () => renderDbSchema(dbSchemaCache));
+    }
+    const trendsAll = document.getElementById('db-trends-all');
+    if (trendsAll) {
+        trendsAll.addEventListener('click', () => setDbTrendsSelection(true));
+    }
+    const trendsNone = document.getElementById('db-trends-none');
+    if (trendsNone) {
+        trendsNone.addEventListener('click', () => setDbTrendsSelection(false));
+    }
+}
+
+function setupSystemControls() {
+    const buttons = document.querySelectorAll('.subnav-btn[data-system-view]');
+    buttons.forEach((button) => {
+        button.addEventListener('click', () => switchSystemView(button.dataset.systemView || 'stats'));
+    });
 }
 
 function setupLmstudioControls() {
@@ -821,6 +935,7 @@ function renderProjectsList(projects = []) {
         <div class="project-item ${selectedProject === project.id ? 'active' : ''} ${projectStatusClass(project.id)}"
              onclick="selectProject('${project.id}')">
             ${project.name}
+            ${renderProjectBadges(project.id)}
         </div>
     `).join('');
 }
@@ -954,6 +1069,7 @@ async function loadProjects() {
         const projects = await fetch('/api/projects').then(r => r.json());
         projectsCache = projects;
         refreshTaskProjectOptions();
+        refreshManualTaskOptions();
         let trackingStatuses = [];
         try {
             const trackingResponse = await fetch('/api/project-tracking');
@@ -970,6 +1086,7 @@ async function loadProjects() {
         (trackingStatuses || []).forEach(entry => {
             projectTracking[entry.project_id] = entry;
         });
+        refreshManualTaskOptions();
         setProjectsError('');
         renderProjectsList(projects);
         renderProjectTrackingBanner();
@@ -1020,8 +1137,9 @@ async function loadTasksList(projectId) {
 
         const tasks = await fetch(url).then(r => r.json());
         const filteredTasks = filterTasksByStatus(tasks);
+        const visibleIds = new Set(filteredTasks.map((task) => task.id));
         const rootComparator = getTaskComparator();
-        const hierarchy = buildTaskHierarchy(filteredTasks, rootComparator);
+        const hierarchy = buildTaskHierarchy(tasks, rootComparator, visibleIds);
         const grid = document.getElementById('tasks-grid');
 
         if (hierarchy.length === 0) {
@@ -1324,6 +1442,32 @@ function refreshTaskProjectOptions() {
     populateProjectSelect(document.getElementById('task-create-project'), selectedProject || '');
 }
 
+function refreshManualTaskOptions() {
+    const select = document.getElementById('manual-task-project');
+    if (!select) return;
+    if (!projectsCache.length) {
+        select.innerHTML = '<option value="">No projects found</option>';
+        return;
+    }
+    const ordered = [...projectsCache].sort((a, b) => {
+        return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+    });
+    select.innerHTML = ordered
+        .map(project => `<option value="${project.id}" ${project.id === selectedProject ? 'selected' : ''}>${project.name}</option>`)
+        .join('');
+
+    const datalist = document.getElementById('manual-task-paths');
+    if (!datalist) return;
+    const paths = new Set();
+    Object.values(projectTracking || {}).forEach((entry) => {
+        (entry.repo_paths || []).forEach((path) => paths.add(path));
+        if (entry.repo_path) paths.add(entry.repo_path);
+    });
+    datalist.innerHTML = Array.from(paths)
+        .map((path) => `<option value="${path}"></option>`)
+        .join('');
+}
+
 function getProjectName(projectId) {
     if (!projectId) {
         return '—';
@@ -1571,6 +1715,27 @@ function projectStatusClass(projectId) {
     return 'project-untracked';
 }
 
+function renderProjectBadges(projectId) {
+    const info = projectTracking[projectId];
+    if (!info) {
+        return '';
+    }
+    const badges = [];
+    if (info.global_embedding_status === 'ready') {
+        badges.push('<span class="badge global">Global</span>');
+    }
+    if (info.embedding_mode) {
+        badges.push(`<span class="badge mode">${info.embedding_mode.toUpperCase()}</span>`);
+    }
+    if (info.global_embedding_mode) {
+        badges.push(`<span class="badge mode">G:${info.global_embedding_mode.toUpperCase()}</span>`);
+    }
+    if (!badges.length) {
+        return '';
+    }
+    return `<div class="project-badges">${badges.join('')}</div>`;
+}
+
 function renderProjectTrackingBanner() {
     const banner = document.getElementById('project-tracking-banner');
     if (!banner) return;
@@ -1579,6 +1744,7 @@ function renderProjectTrackingBanner() {
     const detailEl = document.getElementById('project-tracking-details');
     const untrackBtn = document.getElementById('project-untrack-btn');
     const embedBtn = document.getElementById('project-embed-btn');
+    const upgradeBtn = document.getElementById('project-upgrade-global-btn');
     const configureBtn = document.getElementById('project-track-btn');
     const deleteBtn = document.getElementById('project-delete-btn');
     const errorEl = document.getElementById('project-tracking-error');
@@ -1600,6 +1766,10 @@ function renderProjectTrackingBanner() {
         }
         if (embedBtn) {
             embedBtn.disabled = true;
+        }
+        if (upgradeBtn) {
+            upgradeBtn.classList.add('hidden');
+            upgradeBtn.disabled = true;
         }
         if (configureBtn) {
             configureBtn.disabled = !!trackingErrorMessage;
@@ -1629,8 +1799,15 @@ function renderProjectTrackingBanner() {
     const lastIndexed = info.embedding_last_indexed
         ? new Date(info.embedding_last_indexed).toLocaleString()
         : 'Never';
+    const lastIndexedAge = formatTimeSince(info.embedding_last_indexed);
     const modelLabel = info.embedding_model_id || info.preferred_model_id || 'Default';
     const gpuLabel = info.gpu_enabled ? `GPU (${info.gpu_device || 'local'})` : 'CPU';
+    const globalStatus = info.global_embedding_status ? info.global_embedding_status.toUpperCase() : 'NOT_TRACKED';
+    const globalMode = info.global_embedding_mode ? info.global_embedding_mode.toUpperCase() : 'AUTO';
+    const globalLastIndexed = info.global_embedding_last_indexed
+        ? new Date(info.global_embedding_last_indexed).toLocaleString()
+        : 'Never';
+    const globalLastIndexedAge = formatTimeSince(info.global_embedding_last_indexed);
 
     if (info.embedding_status === 'ready') {
         banner.classList.add('tracked');
@@ -1644,8 +1821,13 @@ function renderProjectTrackingBanner() {
     }
 
     statusText.textContent = `${statusLabel} – Repo: ${repo}`;
+    const projectStats = formatEmbeddingStats(info.embedding_stats);
+    const globalStats = formatEmbeddingStats(info.global_embedding_stats);
     detailEl.innerHTML = `
-        Last indexed: ${lastIndexed} · Model: ${modelLabel} · ${gpuLabel}
+        Last indexed: ${lastIndexed} (${lastIndexedAge}) · Model: ${modelLabel} · ${gpuLabel}<br>
+        Global: ${globalStatus} (${globalMode}) · Last global: ${globalLastIndexed} (${globalLastIndexedAge})<br>
+        ${projectStats ? `Project stats: ${projectStats}` : 'Project stats: —'}<br>
+        ${globalStats ? `Global stats: ${globalStats}` : 'Global stats: —'}
     `;
     banner.classList.remove('hidden');
     if (untrackBtn) {
@@ -1653,6 +1835,11 @@ function renderProjectTrackingBanner() {
     }
     if (embedBtn) {
         embedBtn.disabled = false;
+    }
+    if (upgradeBtn) {
+        const showUpgrade = info.embedding_status === 'ready' && info.global_embedding_status !== 'ready';
+        upgradeBtn.classList.toggle('hidden', !showUpgrade);
+        upgradeBtn.disabled = !showUpgrade;
     }
     if (configureBtn) {
         configureBtn.disabled = false;
@@ -1671,7 +1858,7 @@ function renderProjectTrackingBanner() {
     }
 
     const disabledDueToError = !!trackingErrorMessage;
-    [configureBtn, embedBtn, untrackBtn].forEach(btn => {
+    [configureBtn, embedBtn, untrackBtn, upgradeBtn].forEach(btn => {
         if (btn) {
             btn.disabled = disabledDueToError;
         }
@@ -1694,6 +1881,32 @@ function initializeTrackingForm() {
     }
     if (cancelBtn) {
         cancelBtn.addEventListener('click', hideTrackingConfigPanel);
+    }
+}
+
+function initializeEmbeddingControls() {
+    const modeSelect = document.getElementById('project-embed-mode');
+    const descEl = document.getElementById('project-embed-mode-desc');
+    if (modeSelect) {
+        modeSelect.addEventListener('change', () => setEmbeddingModeDescription(modeSelect, descEl));
+        setEmbeddingModeDescription(modeSelect, descEl);
+    }
+}
+
+function initializeEmbeddingsView() {
+    const form = document.getElementById('global-embed-form');
+    if (form) {
+        form.addEventListener('submit', handleGlobalEmbeddingSubmit);
+    }
+    const modeSelect = document.getElementById('global-embed-mode');
+    const descEl = document.getElementById('global-embed-mode-desc');
+    if (modeSelect) {
+        modeSelect.addEventListener('change', () => setEmbeddingModeDescription(modeSelect, descEl));
+        setEmbeddingModeDescription(modeSelect, descEl);
+    }
+    const searchBtn = document.getElementById('global-search-btn');
+    if (searchBtn) {
+        searchBtn.addEventListener('click', handleGlobalSearch);
     }
 }
 
@@ -1870,16 +2083,18 @@ async function startEmbeddingRun() {
         alert('Configure tracking before starting an embedding run.');
         return;
     }
-    const scopeInput = prompt('Embedding scope? (code / text / both)', 'both') || 'both';
-    const allowedScopes = ['code', 'text', 'both'];
-    const scope = allowedScopes.includes(scopeInput.toLowerCase()) ? scopeInput.toLowerCase() : 'both';
 
-    logUiEvent('project_embedding_start', { project_id: selectedProject, scope });
+    const modeSelect = document.getElementById('project-embed-mode');
+    const globalToggle = document.getElementById('project-embed-global');
+    const mode = modeSelect ? modeSelect.value : 'auto';
+    const target = globalToggle && globalToggle.checked ? 'both' : 'project';
+
+    logUiEvent('project_embedding_start', { project_id: selectedProject, mode, target });
     try {
         const response = await fetch(`/api/project-tracking/${selectedProject}/index`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ scope }),
+            body: JSON.stringify({ mode, target }),
         });
         const result = await response.json();
         if (!response.ok) {
@@ -1890,6 +2105,33 @@ async function startEmbeddingRun() {
     } catch (error) {
         console.error('Error queuing embedding run:', error);
         alert('Failed to start embedding: ' + error.message);
+        handleTrackingFetchError(error.message || 'unknown');
+    }
+}
+
+async function upgradeProjectToGlobal() {
+    if (!selectedProject) {
+        alert('Select a project first.');
+        return;
+    }
+    const modeSelect = document.getElementById('project-embed-mode');
+    const mode = modeSelect ? modeSelect.value : 'auto';
+    logUiEvent('project_embedding_upgrade_global', { project_id: selectedProject, mode });
+    try {
+        const response = await fetch(`/api/project-tracking/${selectedProject}/index`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode, target: 'global' }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.detail || 'Unable to upgrade to global');
+        }
+        await refreshProjectTracking(selectedProject);
+        alert(`Global embedding job queued: ${result.task_id || 'pending'}`);
+    } catch (error) {
+        console.error('Error queuing global embedding:', error);
+        alert('Failed to upgrade to global: ' + error.message);
         handleTrackingFetchError(error.message || 'unknown');
     }
 }
@@ -1982,6 +2224,15 @@ async function loadMemoryView() {
     await loadMemoryItems();
 }
 
+// Embeddings View
+async function loadEmbeddingsView() {
+    await loadGlobalEmbeddingStats();
+    await loadAstProgress();
+    if (!astProgressTimer) {
+        astProgressTimer = setInterval(loadAstProgress, 5000);
+    }
+}
+
 // System Stats View
 async function loadSystemStats() {
     await Promise.all([loadDockerStats(), loadDbStats(), loadLmstudioStats()]);
@@ -2011,6 +2262,258 @@ async function loadDatabaseView() {
             statusEl.textContent = `Error: ${error.message}`;
         }
     }
+}
+
+function switchDbView(viewKey) {
+    const buttons = document.querySelectorAll('.subnav-btn');
+    const views = document.querySelectorAll('.db-view');
+    buttons.forEach((button) => {
+        button.classList.toggle('active', button.dataset.dbView === viewKey);
+    });
+    views.forEach((view) => {
+        view.classList.toggle('active', view.dataset.dbView === viewKey);
+    });
+    if (viewKey === 'schema') {
+        loadDbSchema();
+    }
+    if (viewKey === 'trends') {
+        loadDbTrends();
+    }
+}
+
+function switchSystemView(viewKey, initial = false) {
+    currentSystemView = viewKey || 'stats';
+    const buttons = document.querySelectorAll('.subnav-btn[data-system-view]');
+    const views = document.querySelectorAll('.system-view');
+    buttons.forEach((button) => {
+        button.classList.toggle('active', button.dataset.systemView === currentSystemView);
+    });
+    views.forEach((view) => {
+        view.classList.toggle('active', view.dataset.systemView === currentSystemView);
+    });
+    if (!initial) {
+        logUiEvent('system_view_switch', { view: currentSystemView });
+    }
+    switch (currentSystemView) {
+        case 'stats':
+            loadSystemStats();
+            break;
+        case 'database':
+            loadDatabaseView();
+            switchDbView('queries');
+            break;
+        case 'lmstudio':
+            loadLmstudioView();
+            break;
+        case 'logs':
+            loadLogsView();
+            break;
+        default:
+            loadSystemStats();
+            break;
+    }
+}
+
+function startSystemMeter() {
+    const update = async () => {
+        const cpuEl = document.getElementById('meter-cpu');
+        const ramEl = document.getElementById('meter-ram');
+        const gpuEl = document.getElementById('meter-gpu');
+        if (!cpuEl || !ramEl || !gpuEl) return;
+        try {
+            const response = await fetch('/api/system/telemetry');
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload.detail || 'Telemetry failed');
+            }
+            cpuEl.textContent = payload.cpu_percent !== null ? `${payload.cpu_percent.toFixed(0)}%` : '—';
+            if (payload.mem_total_mb) {
+                ramEl.textContent = `${payload.mem_used_mb}/${payload.mem_total_mb} MB`;
+            } else {
+                ramEl.textContent = '—';
+            }
+            if (payload.gpu && payload.gpu.length) {
+                const gpu = payload.gpu[0];
+                const util = gpu.utilization !== null ? `${gpu.utilization}%` : '—';
+                const mem = gpu.mem_total_mb ? `${gpu.mem_used_mb}/${gpu.mem_total_mb} MB` : '';
+                gpuEl.textContent = mem ? `${util} (${mem})` : util;
+            } else {
+                gpuEl.textContent = '—';
+            }
+        } catch (error) {
+            cpuEl.textContent = '—';
+            ramEl.textContent = '—';
+            gpuEl.textContent = '—';
+        }
+    };
+    update();
+    setInterval(update, 5000);
+}
+
+async function loadDbSchema() {
+    const statusEl = document.getElementById('db-schema-status');
+    if (statusEl) statusEl.textContent = 'Loading...';
+    try {
+        const response = await fetch('/api/system/db-schema');
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.detail || 'Schema failed');
+        }
+        dbSchemaCache = payload;
+        renderDbSchema(payload);
+        if (statusEl) statusEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    } catch (error) {
+        if (statusEl) statusEl.textContent = `Error: ${error.message}`;
+    }
+}
+
+function renderDbSchema(payload) {
+    const graph = document.getElementById('db-schema-graph');
+    const legend = document.getElementById('db-schema-legend');
+    if (!graph || !payload) return;
+    const dbSelect = document.getElementById('db-schema-database');
+    const scope = dbSelect ? dbSelect.value : 'core';
+    const tables = (payload.tables || []).filter((table) => table.group === scope);
+    const edges = (payload.edges || []).filter((edge) => edge.group === scope);
+
+    const width = 900;
+    const height = 520;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const radius = Math.min(centerX, centerY) - 90;
+    const angleStep = tables.length ? (Math.PI * 2) / tables.length : 0;
+
+    const positioned = tables.map((table, index) => {
+        const angle = index * angleStep - Math.PI / 2;
+        const x = centerX + radius * Math.cos(angle);
+        const y = centerY + radius * Math.sin(angle);
+        return { ...table, x, y };
+    });
+
+    const nodeByName = {};
+    positioned.forEach((table) => {
+        nodeByName[table.name] = table;
+    });
+
+    const edgeSvg = edges.map((edge) => {
+        const source = nodeByName[edge.from];
+        const target = nodeByName[edge.to];
+        if (!source || !target) return '';
+        return `<line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}" class="schema-edge"/>`;
+    }).join('');
+
+    const nodeSvg = positioned.map((table) => `
+        <g class="schema-node">
+            <circle cx="${table.x}" cy="${table.y}" r="48"></circle>
+            <text x="${table.x}" y="${table.y - 6}" text-anchor="middle">${table.label}</text>
+            <text x="${table.x}" y="${table.y + 14}" text-anchor="middle" class="schema-sub">${table.name}</text>
+        </g>
+    `).join('');
+
+    graph.innerHTML = `
+        <rect width="100%" height="100%" rx="24" ry="24" class="schema-bg"></rect>
+        ${edgeSvg}
+        ${nodeSvg}
+    `;
+
+    if (legend) {
+        legend.innerHTML = (payload.groups || [])
+            .map((group) => `<span class="legend-pill">${group.label}</span>`)
+            .join('');
+    }
+}
+
+async function loadDbTrends() {
+    const statusEl = document.getElementById('db-trends-status');
+    if (statusEl) statusEl.textContent = 'Loading...';
+    try {
+        const response = await fetch('/api/system/db-trends');
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.detail || 'Trends failed');
+        }
+        dbTrendsCache = payload;
+        renderDbTrends(payload);
+        if (statusEl) statusEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    } catch (error) {
+        if (statusEl) statusEl.textContent = `Error: ${error.message}`;
+    }
+}
+
+function renderDbTrends(payload) {
+    const container = document.getElementById('db-trends-projects');
+    if (!container || !payload) return;
+    const projects = payload.projects || [];
+    container.innerHTML = projects.map((project) => `
+        <label class="checkbox-inline">
+            <input type="checkbox" class="db-trends-project" data-project-id="${project.id}" checked>
+            ${project.name}
+        </label>
+    `).join('');
+    container.querySelectorAll('.db-trends-project').forEach((input) => {
+        input.addEventListener('change', () => renderDbTrendsChart(payload));
+    });
+    renderDbTrendsChart(payload);
+}
+
+function setDbTrendsSelection(selectAll) {
+    document.querySelectorAll('.db-trends-project').forEach((input) => {
+        input.checked = selectAll;
+    });
+    renderDbTrendsChart(dbTrendsCache);
+}
+
+function renderDbTrendsChart(payload) {
+    const canvas = document.getElementById('db-trends-canvas');
+    if (!canvas || !payload) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const selectedIds = Array.from(document.querySelectorAll('.db-trends-project'))
+        .filter((input) => input.checked)
+        .map((input) => input.dataset.projectId);
+    const projects = (payload.projects || []).filter((project) => selectedIds.includes(project.id));
+    if (!projects.length) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillText('Select at least one project to view trends.', 20, 30);
+        return;
+    }
+
+    const metrics = ['tasks', 'memories', 'code_chunks'];
+    const colors = ['#3b82f6', '#10b981', '#f59e0b'];
+    const maxValue = Math.max(
+        ...projects.map((project) => Math.max(project.tasks, project.memories, project.code_chunks)),
+        1
+    );
+    const padding = 40;
+    const chartWidth = canvas.width - padding * 2;
+    const chartHeight = canvas.height - padding * 2;
+    const groupWidth = chartWidth / projects.length;
+    const barWidth = Math.min(34, (groupWidth - 16) / metrics.length);
+
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('Project counts', padding, padding - 12);
+
+    projects.forEach((project, index) => {
+        const baseX = padding + index * groupWidth + 8;
+        metrics.forEach((metric, metricIndex) => {
+            const value = project[metric] || 0;
+            const barHeight = (value / maxValue) * chartHeight;
+            ctx.fillStyle = colors[metricIndex];
+            ctx.fillRect(baseX + metricIndex * (barWidth + 6), padding + (chartHeight - barHeight), barWidth, barHeight);
+        });
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(project.name.slice(0, 10), baseX, padding + chartHeight + 18);
+    });
+
+    metrics.forEach((metric, index) => {
+        ctx.fillStyle = colors[index];
+        ctx.fillRect(padding + index * 110, canvas.height - 18, 12, 12);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(metric.replace('_', ' '), padding + index * 110 + 18, canvas.height - 8);
+    });
 }
 
 // LM Studio View
@@ -2094,19 +2597,33 @@ function renderLmstudioModels(container, models) {
         container.innerHTML = '<div class="empty-state">No models found</div>';
         return;
     }
-    container.innerHTML = `
-        <div class="data-row header three-col">
-            <div>Model</div>
-            <div>Type</div>
-            <div>Variants</div>
-        </div>
-        ${models.map((model) => `
-            <div class="data-row three-col">
-                <div>${model.name || model.model_name || model.key || '—'}</div>
+    const rows = models.map((model) => {
+        const display = model.displayName || model.name || model.model_name || model.modelKey || model.key || model.path || '—';
+        const params = model.paramsString || model.params || '—';
+        const quant = model.quantization?.name || model.quantization || '—';
+        const context = model.maxContextLength || model.context_length || '—';
+        const modelKey = model.modelKey || model.key || model.path || '—';
+        return `
+            <div class="data-row six-col">
+                <div>${display}</div>
                 <div>${model.type || model.category || '—'}</div>
-                <div>${model.variants?.length || model.variant_count || '—'}</div>
+                <div>${params}</div>
+                <div>${quant}</div>
+                <div>${context}</div>
+                <div class="mono muted">${modelKey}</div>
             </div>
-        `).join('')}
+        `;
+    }).join('');
+    container.innerHTML = `
+        <div class="data-row header six-col">
+            <div>Name</div>
+            <div>Type</div>
+            <div>Params</div>
+            <div>Quant</div>
+            <div>Context</div>
+            <div>Key</div>
+        </div>
+        ${rows}
     `;
 }
 
@@ -2119,16 +2636,18 @@ function renderLmstudioLoaded(container, models) {
         return;
     }
     container.innerHTML = `
-        <div class="data-row header three-col">
+        <div class="data-row header four-col">
             <div>ID</div>
             <div>Model</div>
             <div>Context</div>
+            <div>GPU</div>
         </div>
         ${models.map((model) => `
-            <div class="data-row three-col">
+            <div class="data-row four-col">
                 <div>${model.identifier || model.id || '—'}</div>
-                <div>${model.model || model.name || '—'}</div>
+                <div>${model.model || model.name || model.modelKey || '—'}</div>
                 <div>${model.context_length || model.ctx || '—'}</div>
+                <div>${model.gpu || model.gpu_offload || '—'}</div>
             </div>
         `).join('')}
     `;
@@ -2678,7 +3197,7 @@ async function handleMemoryAdd(event) {
         });
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.detail || 'Add failed');
+            throw new Error(normalizeErrorDetail(result.detail) || 'Add failed');
         }
         if (statusEl) {
             statusEl.textContent = `Added memory ${result.memory_id?.slice(0, 8) || ''}`;
@@ -2763,6 +3282,7 @@ function renderMemoryItems(items) {
             <div class="memory-meta">
                 <span>ID: ${item.memory_id.slice(0, 8)}…</span>
                 <span>Project: ${item.project_id || '—'}</span>
+                ${item.scope ? `<span>Scope: ${item.scope}</span>` : ''}
                 <span>Created: ${new Date(item.created_at).toLocaleString()}</span>
                 <span>Feedback: ${item.user_feedback ?? 0}</span>
                 ${item.similarity !== undefined ? `<span>Similarity: ${item.similarity.toFixed(3)}</span>` : ''}
@@ -2774,6 +3294,31 @@ function renderMemoryItems(items) {
                 <button onclick="handleMemoryFeedback('${item.memory_id}', 1)">👍 Good</button>
                 <button onclick="handleMemoryFeedback('${item.memory_id}', -1)">👎 Bad</button>
                 <button onclick="handleMemoryDelete('${item.memory_id}')">🗑️ Delete</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderGlobalMemoryItems(items) {
+    const container = document.getElementById('global-search-results');
+    if (!container) return;
+    if (!items || items.length === 0) {
+        container.innerHTML = '<div class="empty-state">No global memory entries found</div>';
+        return;
+    }
+
+    container.innerHTML = items.map(item => `
+        <div class="memory-card">
+            <div class="memory-content">${renderMemorySnippet(item.content)}</div>
+            <div class="memory-meta">
+                <span>ID: ${item.memory_id.slice(0, 8)}…</span>
+                <span>Scope: Global</span>
+                <span>Created: ${new Date(item.created_at).toLocaleString()}</span>
+                <span>Feedback: ${item.user_feedback ?? 0}</span>
+                ${item.similarity !== undefined ? `<span>Similarity: ${item.similarity.toFixed(3)}</span>` : ''}
+            </div>
+            <div class="memory-tags">
+                ${(item.categories || []).map(cat => `<span class="memory-tag">${cat}</span>`).join('')}
             </div>
         </div>
     `).join('');
@@ -2815,6 +3360,203 @@ async function handleMemoryFeedback(memoryId, delta) {
         console.error('Error updating feedback:', error);
         alert('Failed to update feedback: ' + error.message);
     }
+}
+
+async function handleGlobalEmbeddingSubmit(event) {
+    event.preventDefault();
+    const statusEl = document.getElementById('global-embed-status');
+    const pathsInput = document.getElementById('global-embed-paths');
+    const modeSelect = document.getElementById('global-embed-mode');
+    const codeModelInput = document.getElementById('global-embed-code-model');
+    const textModelInput = document.getElementById('global-embed-text-model');
+    const forceToggle = document.getElementById('global-embed-force');
+
+    const rawPaths = pathsInput ? pathsInput.value.split('\n') : [];
+    const repoPaths = rawPaths.map(line => line.trim()).filter(Boolean);
+    if (repoPaths.length === 0) {
+        if (statusEl) statusEl.textContent = 'Enter at least one repository path.';
+        return;
+    }
+
+    const payload = {
+        repo_paths: repoPaths,
+        mode: modeSelect ? modeSelect.value : 'auto',
+        force_reindex: forceToggle ? forceToggle.checked : false,
+    };
+    if (codeModelInput && codeModelInput.value.trim()) {
+        payload.code_model_id = codeModelInput.value.trim();
+    }
+    if (textModelInput && textModelInput.value.trim()) {
+        payload.text_model_id = textModelInput.value.trim();
+    }
+
+    logUiEvent('global_embedding_start', { repo_paths: repoPaths, mode: payload.mode });
+    if (statusEl) statusEl.textContent = 'Queueing...';
+
+    try {
+        const response = await fetch('/api/memory/global/index', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.detail || 'Unable to queue global embedding');
+        }
+        if (statusEl) statusEl.textContent = `Queued ${result.task_id?.slice(0, 8) || 'job'}.`;
+        await loadGlobalEmbeddingStats();
+    } catch (error) {
+        console.error('Error queueing global embedding:', error);
+        if (statusEl) statusEl.textContent = `Queue failed: ${error.message}`;
+    }
+}
+
+async function handleGlobalSearch() {
+    const queryInput = document.getElementById('global-search-query');
+    const query = queryInput ? queryInput.value.trim() : '';
+    if (!query) {
+        return;
+    }
+    logUiEvent('global_memory_search', { query });
+    try {
+        const response = await fetch('/api/memory/global/search-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, top_k: 8 }),
+        });
+        const results = await response.json();
+        if (!response.ok) {
+            throw new Error(results.detail || 'Global search failed');
+        }
+        renderGlobalMemoryItems(results);
+    } catch (error) {
+        console.error('Error searching global memory:', error);
+        const container = document.getElementById('global-search-results');
+        if (container) {
+            container.innerHTML = `<div class="error">Search failed: ${error.message}</div>`;
+        }
+    }
+}
+
+async function loadGlobalEmbeddingStats() {
+    try {
+        const response = await fetch('/api/memory/global/stats');
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.detail || 'Failed to load global stats');
+        }
+        const totalEl = document.getElementById('global-embedding-total');
+        if (totalEl) totalEl.textContent = payload.total ?? 0;
+        const ratioEl = document.getElementById('global-embedding-ratio');
+        if (ratioEl) ratioEl.textContent = (payload.overall_frequency_ratio ?? 0).toFixed(2);
+        renderGlobalTopUsed(payload.top_used || []);
+    } catch (error) {
+        console.error('Error loading global embedding stats:', error);
+    }
+}
+
+async function loadAstProgress() {
+    const statusEl = document.getElementById('ast-progress-status');
+    const metaEl = document.getElementById('ast-progress-meta');
+    const fileEl = document.getElementById('ast-progress-file');
+    try {
+        const response = await fetch('/api/memory/embedding-runs?status=running&limit=1');
+        const runs = await response.json();
+        if (!response.ok) {
+            throw new Error(runs.detail || 'Failed to load embedding runs');
+        }
+        const run = Array.isArray(runs) && runs.length ? runs[0] : null;
+        renderAstProgress(run);
+        if (statusEl) {
+            statusEl.textContent = run ? `Running ${run.mode?.toUpperCase() || ''}` : 'Idle';
+        }
+        if (metaEl) {
+            metaEl.textContent = run ? `Target: ${run.target} · Started ${formatTimeSince(run.started_at)}` : 'No active embedding run.';
+        }
+        if (fileEl) {
+            const currentFile = run?.stats?.progress?.current_file;
+            fileEl.textContent = currentFile ? `Now parsing: ${currentFile}` : '';
+        }
+    } catch (error) {
+        if (statusEl) statusEl.textContent = 'Unavailable';
+        if (metaEl) metaEl.textContent = 'Unable to read AST progress.';
+        if (fileEl) fileEl.textContent = '';
+        renderAstProgress(null);
+    }
+}
+
+function renderAstProgress(run) {
+    const canvas = document.getElementById('ast-progress-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (!run || !run.stats || !run.stats.progress) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '12px system-ui, sans-serif';
+        ctx.fillText('No active AST parse.', 20, 30);
+        return;
+    }
+
+    const progress = run.stats.progress || {};
+    const astOk = progress.ast_success || 0;
+    const astFail = progress.ast_failure || 0;
+    const processed = progress.files_processed || 0;
+    const total = progress.files_total || 0;
+    const maxAst = Math.max(astOk, astFail, 1);
+    const padding = 24;
+    const width = canvas.width - padding * 2;
+    const height = canvas.height - padding * 2;
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.fillText('AST success vs fail', padding, padding - 6);
+
+    const barWidth = 80;
+    const okHeight = (astOk / maxAst) * (height - 40);
+    const failHeight = (astFail / maxAst) * (height - 40);
+    const baseY = padding + (height - 40);
+    ctx.fillStyle = '#10b981';
+    ctx.fillRect(padding, baseY - okHeight, barWidth, okHeight);
+    ctx.fillStyle = '#ef4444';
+    ctx.fillRect(padding + barWidth + 24, baseY - failHeight, barWidth, failHeight);
+
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText(`OK: ${astOk}`, padding, baseY + 18);
+    ctx.fillText(`Fail: ${astFail}`, padding + barWidth + 24, baseY + 18);
+
+    const progressY = padding + height - 10;
+    const ratio = total ? processed / total : 0;
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.3)';
+    ctx.fillRect(padding + 220, progressY - 8, width - 240, 8);
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillRect(padding + 220, progressY - 8, (width - 240) * ratio, 8);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillText(`Files: ${processed}/${total || '—'}`, padding + 220, progressY - 14);
+}
+
+function renderGlobalTopUsed(items) {
+    const container = document.getElementById('global-embedding-top');
+    if (!container) return;
+    if (!items.length) {
+        container.innerHTML = '<div class="empty-state">No global embeddings yet</div>';
+        return;
+    }
+    container.innerHTML = `
+        <div class="data-row header three-col">
+            <div>Memory ID</div>
+            <div>Accesses</div>
+            <div>Created</div>
+        </div>
+        ${items.map(item => `
+            <div class="data-row three-col">
+                <div>${String(item.memory_id).slice(0, 8)}…</div>
+                <div>${item.access_count ?? 0}</div>
+                <div>${item.created_at ? new Date(item.created_at).toLocaleDateString() : '—'}</div>
+            </div>
+        `).join('')}
+    `;
 }
 
 function renderMemorySnippet(content) {

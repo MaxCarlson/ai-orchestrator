@@ -11,12 +11,12 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 import asyncpg
 import numpy as np
 
-from memory.code_chunking import CodeChunk, chunk_file
+from memory.code_chunking import CodeChunk, chunk_file_with_stats
 from memory.code_embeddings import CodeEmbedder
 from memory.manager import initialize_schema
 
@@ -25,15 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 async def _fetch_existing_hashes(
-    conn: asyncpg.Connection, project_id: str, file_path: str
+    conn: asyncpg.Connection,
+    table: str,
+    owner_column: str,
+    owner_id: str,
+    file_path: str,
 ) -> Dict[str, str]:
     rows = await conn.fetch(
-        """
+        f"""
         SELECT symbol_name, content_hash
-        FROM code_chunks
-        WHERE project_id = $1 AND file_path = $2
+        FROM {table}
+        WHERE {owner_column} = $1 AND file_path = $2
         """,
-        project_id,
+        owner_id,
         file_path,
     )
     return {row["symbol_name"]: row["content_hash"] for row in rows}
@@ -41,44 +45,74 @@ async def _fetch_existing_hashes(
 
 async def _upsert_chunk(
     conn: asyncpg.Connection,
-    project_id: str,
+    table: str,
+    owner_column: str,
+    owner_id: str,
     chunk: CodeChunk,
     embedding: np.ndarray,
     model_name: str,
     force_reindex: bool,
+    source_project_id: str | None = None,
 ) -> bool:
     existing_hash = await conn.fetchval(
-        """
+        f"""
         SELECT content_hash
-        FROM code_chunks
-        WHERE project_id = $1 AND file_path = $2 AND symbol_name = $3
+        FROM {table}
+        WHERE {owner_column} = $1 AND file_path = $2 AND symbol_name = $3
         """,
-        project_id,
+        owner_id,
         chunk.file_path,
         chunk.symbol_name,
     )
     if existing_hash and existing_hash == chunk.content_hash and not force_reindex:
         return False
 
-    await conn.execute(
-        """
-        INSERT INTO code_chunks (
-            project_id,
-            file_path,
-            symbol_name,
-            chunk_type,
-            start_line,
-            end_line,
-            content,
-            content_hash,
-            embedding,
-            embedding_model,
-            language,
-            embedding_status,
-            updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'ready', NOW())
-        ON CONFLICT (project_id, file_path, symbol_name)
+    columns = [
+        owner_column,
+        "file_path",
+        "symbol_name",
+        "chunk_type",
+        "start_line",
+        "end_line",
+        "content",
+        "content_hash",
+        "embedding",
+        "embedding_model",
+        "language",
+        "embedding_status",
+        "updated_at",
+    ]
+    values = [
+        owner_id,
+        chunk.file_path,
+        chunk.symbol_name,
+        chunk.chunk_type,
+        chunk.start_line,
+        chunk.end_line,
+        chunk.content,
+        chunk.content_hash,
+        embedding,
+        model_name,
+        chunk.language,
+        "ready",
+        "NOW()",
+    ]
+
+    if table == "global_code_chunks":
+        columns.insert(1, "source_project_id")
+        values.insert(1, source_project_id)
+
+    value_placeholders = ", ".join(
+        f"${idx}" if value != "NOW()" else "NOW()"
+        for idx, value in enumerate(values, start=1)
+    )
+    insert_columns = ", ".join(columns)
+    conflict_target = f"({owner_column}, file_path, symbol_name)"
+
+    sql = f"""
+        INSERT INTO {table} ({insert_columns})
+        VALUES ({value_placeholders})
+        ON CONFLICT {conflict_target}
         DO UPDATE SET
             chunk_type = EXCLUDED.chunk_type,
             start_line = EXCLUDED.start_line,
@@ -90,50 +124,73 @@ async def _upsert_chunk(
             language = EXCLUDED.language,
             embedding_status = EXCLUDED.embedding_status,
             updated_at = NOW()
-        """,
-        project_id,
-        chunk.file_path,
-        chunk.symbol_name,
-        chunk.chunk_type,
-        chunk.start_line,
-        chunk.end_line,
-        chunk.content,
-        chunk.content_hash,
-        embedding,
-        model_name,
-        chunk.language,
-    )
+    """
+
+    await conn.execute(sql, *[v for v in values if v != "NOW()"])
     return True
 
 
 async def index_repository(
     repo_path: Path,
-    project_id: str,
+    owner_id: str,
     pool: asyncpg.Pool,
     model_name: str,
     batch_size: int,
     force_reindex: bool,
-) -> None:
+    table: str = "code_chunks",
+    owner_column: str = "project_id",
+    source_project_id: str | None = None,
+    progress_cb: Optional[Callable[[dict, str, int, int], Awaitable[None]]] = None,
+    progress_interval: int = 20,
+) -> dict:
     embedder = CodeEmbedder(model_name=model_name)
     files = [path for path in repo_path.rglob("*") if path.is_file()]
     logger.info("Scanning %s files under %s", len(files), repo_path)
 
+    stats = {
+        "files_scanned": len(files),
+        "files_processed": 0,
+        "code_files": 0,
+        "text_files": 0,
+        "unsupported_files": 0,
+        "ast_success": 0,
+        "ast_failure": 0,
+        "chunks_indexed": 0,
+        "chunks_skipped": 0,
+    }
+
+    total_files = len(files)
+    processed = 0
     indexed = 0
     skipped = 0
     for path in files:
-        chunks = chunk_file(path)
+        processed += 1
+        stats["files_processed"] = processed
+        chunks, file_stats = chunk_file_with_stats(path, include_text=False)
+        if file_stats.file_type == "python":
+            stats["code_files"] += 1
+            if file_stats.ast_status == "success":
+                stats["ast_success"] += 1
+            elif file_stats.ast_status == "failure":
+                stats["ast_failure"] += 1
+        elif file_stats.file_type == "text":
+            stats["text_files"] += 1
+        else:
+            stats["unsupported_files"] += 1
+
         if not chunks:
             continue
 
         async with pool.acquire() as conn:
             await initialize_schema(conn)
-            existing = await _fetch_existing_hashes(conn, project_id, str(path))
+            existing = await _fetch_existing_hashes(conn, table, owner_column, owner_id, str(path))
 
         pending_chunks: List[CodeChunk] = []
         for chunk in chunks:
             existing_hash = existing.get(chunk.symbol_name)
             if existing_hash and existing_hash == chunk.content_hash and not force_reindex:
                 skipped += 1
+                stats["chunks_skipped"] += 1
                 continue
             pending_chunks.append(chunk)
 
@@ -144,15 +201,25 @@ async def index_repository(
                 for chunk, embedding in zip(batch, embeddings):
                     updated = await _upsert_chunk(
                         conn,
-                        project_id,
+                        table,
+                        owner_column,
+                        owner_id,
                         chunk,
                         embedding,
                         model_name,
                         force_reindex,
+                        source_project_id=source_project_id,
                     )
                     indexed += 1 if updated else 0
+                    stats["chunks_indexed"] += 1 if updated else 0
+
+        if progress_cb and (
+            processed % progress_interval == 0 or processed == total_files
+        ):
+            await progress_cb(dict(stats), str(path), processed, total_files)
 
     logger.info("Indexing complete: %s updated, %s skipped", indexed, skipped)
+    return stats
 
 
 def parse_args() -> argparse.Namespace:
@@ -183,7 +250,7 @@ async def main() -> None:
     try:
         await index_repository(
             repo_path=args.repo_path,
-            project_id=args.project_id,
+            owner_id=args.project_id,
             pool=pool,
             model_name=args.model,
             batch_size=args.batch_size,
