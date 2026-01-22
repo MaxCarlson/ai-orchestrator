@@ -10,6 +10,7 @@
 - kmtui: installed from scripts repo; talks directly to PostgreSQL; writes queued tasks into host task_queue. Preserve KM_* envs noted in [README.md](README.md).
 - Web UI (koweb): code in orchestrator_web_viewer/. Run via koweb CLI (pip install -e modules/orchestrator_web_viewer/[termdash]) using KO_WEB_* envs; default port 3001. APIs in orchestrator_web_viewer/api/*.py, WebSocket manager in orchestrator_web_viewer/websocket/manager.py, static assets in orchestrator_web_viewer/static/.
 - Visual capture workflow: use [skills/web-ui-visual-debug/SKILL.md](skills/web-ui-visual-debug/SKILL.md) to spin up koweb/frontends, open the live page, and capture screenshots for visual QA. Persona helper: [.github/agents/web-ui-visual.agent.md](.github/agents/web-ui-visual.agent.md).
+- Testing discipline: follow [.github/instructions/testing.instructions.md](.github/instructions/testing.instructions.md) to run pytest quietly before and after changes, add coverage-focused tests for new code, and fix failing tests vs code appropriately.
 - Tests: web viewer tests via pytest orchestrator_web_viewer/tests/ (or modules/orchestrator_web_viewer/tests/ from scripts repo). Orchestrator lacks broad automated coverage—validate with docker compose flows.
 - Logging/results: orchestrator logs bind-mounted to logs/; task artifacts live under task_queue/results/<task-id>/. Keep paths stable.
 - Safety: never delete/rename task_queue subfolders; do not commit docker/.env or secrets; document host-only assumptions (GPU, CLIs) instead of baking them into images.
