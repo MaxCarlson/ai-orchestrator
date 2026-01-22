@@ -47,6 +47,22 @@ PY`
 - Drop captures in `task_queue/results/<task-id>/artifacts/` or a local `artifacts/` folder and cite paths in notes/PRs.
 - If investigating a regression, keep both before/after captures with timestamps.
 
+### 5) Automated visual smoke test (optional)
+- Keep reference shots under `orchestrator_web_viewer/tests/reference_ui/` (e.g., `dashboard.png`).
+- Rebuild and start: `docker compose build koweb && docker compose up -d koweb`.
+- Capture current: `chromium --headless --disable-gpu --window-size=1280,720 --screenshot=artifacts/current.png http://localhost:3001`.
+- Compare with a tiny Python diff (requires pillow):
+  - `python - <<'PY'
+from PIL import Image, ImageChops
+ref = Image.open('orchestrator_web_viewer/tests/reference_ui/dashboard.png').convert('RGB')
+cur = Image.open('artifacts/current.png').convert('RGB')
+diff = ImageChops.difference(ref, cur)
+box = diff.getbbox()
+print('diff bbox:', box)
+diff.save('artifacts/diff.png') if box else None
+PY`
+- Flag any non-empty bbox for review and attach diff.png.
+
 ## Tips
 - Always rebuild/restart koweb after frontend/template changes: `docker compose build koweb && docker compose up -d koweb`.
 - Use KO_WEB_AUTH_USER/KO_WEB_AUTH_PASSWORD when exposing beyond localhost.
