@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "/home/mcarls/scripts"
+		}
+	],
+	"settings": {
+		"chatgpt.runCodexInWindowsSubsystemForLinux": true,
+		"chatgpt.openOnStartup": true
+	}
+}
