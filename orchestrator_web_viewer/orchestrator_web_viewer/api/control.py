@@ -25,6 +25,8 @@ class ManualTaskPayload(BaseModel):
     cli_preference: str = "claude"
     priority: int = Field(default=3, ge=1, le=5)
     working_dir: Optional[str] = None
+    approved: bool = False
+    approved_by: Optional[str] = None
 
 
 @router.get("/models")

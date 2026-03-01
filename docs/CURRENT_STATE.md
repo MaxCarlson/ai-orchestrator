@@ -1,4 +1,4 @@
-# Briefing for Next Session
+# Current State
 
 **Date**: 2026-01-07  
 **Location**: WSL2 hoster (Windows 11 + WSL2)  
@@ -9,13 +9,13 @@
 ## Current State (Trust This Over Older Docs)
 
 This repo has moved beyond initial setup. Some older markdown still reflects earlier phases.
-Use this briefing + `docs/NEXT_STEPS.md` as the active source of truth.
+Use this document as the operational state snapshot.
 
 ### Working
 - PostgreSQL in Docker (shared with knowledge_manager).
 - Orchestrator API container (FastAPI) running on port 8000.
 - Filesystem task queue (`task_queue/`) with real Claude worker.
-- Orchestrator Web Viewer exists in `~/scripts/modules/orchestrator_web_viewer`.
+- Orchestrator Web Viewer module exists in `orchestrator_web_viewer/`.
 
 ### Newly Added (Code-Aware Indexing)
 - `memory/code_chunking.py`: AST-based Python symbol chunker.
@@ -56,4 +56,4 @@ container; otherwise run the command directly on the host.
 
 ## Next Steps (Short List)
 
-See `docs/NEXT_STEPS.md`. Keep it updated and short.
+Use `docs/NEXT_STEPS.md` for active short-horizon execution tasks.

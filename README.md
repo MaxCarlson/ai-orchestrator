@@ -2,7 +2,7 @@
 
 A distributed system for orchestrating AI agents, managing tasks, and coordinating between human users and multiple LLMs/CLIs.
 
-> **📖 Documentation:** This README covers daily operations. See [PLAN.md](PLAN.md) for roadmap and [PROGRESS.md](PROGRESS.md) for current status.
+> **📖 Documentation:** This README covers daily operations. See [GOALS.md](GOALS.md) for roadmap and [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md) for current status.
 
 ## Quick Reference
 
@@ -353,8 +353,9 @@ ai-orchestrator/
 │   ├── messaging.py           # LISTEN/NOTIFY client
 │   └── task_queue.py
 ├── docs/                      # Documentation
-│   ├── POSTGRESQL_MIGRATION_STATUS.md
-│   └── BRIEFING_FOR_NEXT_SESSION.md
+│   ├── CURRENT_STATE.md
+│   ├── NEXT_STEPS.md
+│   └── archive/
 ├── docker-compose.yml         # Main compose file
 └── README.md
 ```
@@ -394,7 +395,7 @@ SELECT * FROM tasks WHERE status = 'todo';
 ### REST API (Monitoring)
 - Orchestrator exposes HTTP API for status monitoring
 - External tools can query task status, statistics
-- Future: Web UI for system dashboard
+- Web UI is available via `koweb` at `http://localhost:3001`
 
 ## Integration with scripts Repo
 
@@ -415,11 +416,12 @@ kmtui  # Launches TUI, connects to PostgreSQL
 
 ## Project Documentation
 
-- **[PLAN.md](PLAN.md)** - Implementation roadmap and future phases
-- **[PROGRESS.md](PROGRESS.md)** - Completed work and current status
+- **[GOALS.md](GOALS.md)** - Roadmap and strategic direction
+- **[docs/CURRENT_STATE.md](docs/CURRENT_STATE.md)** - Current operational state
+- **[docs/NEXT_STEPS.md](docs/NEXT_STEPS.md)** - Short active execution list
 - **[docs/CONTAINERIZATION_STRATEGY.md](docs/CONTAINERIZATION_STRATEGY.md)** - Architecture decisions
 - **[docs/TASK_QUEUE_DESIGN.md](docs/TASK_QUEUE_DESIGN.md)** - Task queue system design
-- **[docs/ORCHESTRATOR_VIEWER_DESIGN.md](docs/ORCHESTRATOR_VIEWER_DESIGN.md)** - Future TUI design
+- **[docs/archive/](docs/archive/)** - Archived historical plans and superseded docs
 
 ---
 

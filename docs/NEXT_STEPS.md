@@ -1,7 +1,7 @@
 # AI Orchestrator - Short-Term Task List
 
 This file tracks a small, actively-managed set of tasks. It is derived from the
-broader plans in `ai-orchestrator-briefing.md`, `PLAN.md`, and `memory/*`.
+broader plans in `ai-orchestrator-briefing.md`, `GOALS.md`, and `memory/*`.
 Keep this list short, update status as work progresses, and check items off when done.
 
 ## Active Priorities
@@ -22,6 +22,6 @@ Keep this list short, update status as work progresses, and check items off when
 
 ## Notes
 
-- The authoritative long-form plan for code-aware indexing is in
-  `memory/advanced-code-embedding-implementation-plan.md`.
+- The long-form historical plan for code-aware indexing is archived at
+  `docs/archive/memory_advanced-code-embedding-implementation-plan.md`.
 - When the list grows, split into multiple short lists and link them here.

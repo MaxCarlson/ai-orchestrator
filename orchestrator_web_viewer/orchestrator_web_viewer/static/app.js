@@ -23,12 +23,10 @@ let astProgressTimer = null;
 const TRACKING_ERROR_COOLDOWN_MS = 15000;
 const TASK_STATUSES = [
     { value: 'todo', label: 'Todo' },
-    { value: 'in_progress', label: 'In Progress' },
-    { value: 'blocked', label: 'Blocked' },
+    { value: 'in-progress', label: 'In Progress' },
     { value: 'done', label: 'Done' },
-    { value: 'archived', label: 'Archived' },
 ];
-const DEFAULT_ACTIVE_STATUSES = ['todo', 'in_progress', 'blocked'];
+const DEFAULT_ACTIVE_STATUSES = ['todo', 'in-progress'];
 let activeTaskStatuses = new Set(DEFAULT_ACTIVE_STATUSES);
 const logViewerSettings = {
     minLevel: 'INFO',
@@ -93,6 +91,19 @@ function normalizeErrorDetail(detail) {
     } catch (error) {
         return String(detail);
     }
+}
+
+function normalizeTaskStatusValue(status) {
+    if (!status) return 'todo';
+    if (status === 'in_progress') return 'in-progress';
+    return status;
+}
+
+function approvalMetadata(action = 'webui-action') {
+    return {
+        approved: true,
+        approved_by: action,
+    };
 }
 
 function priorityToColor(priority = 5) {
@@ -768,6 +779,7 @@ async function submitManualTask(event) {
     const formData = new FormData(form);
     const payload = Object.fromEntries(formData.entries());
     payload.priority = Number(payload.priority);
+    Object.assign(payload, approvalMetadata('webui-manual-task'));
     if (!payload.working_dir) {
         delete payload.working_dir;
     }
@@ -850,12 +862,18 @@ function updateQueueColumn(status, tasks) {
         return;
     }
 
-    list.innerHTML = tasks.map(task => `
+    list.innerHTML = tasks.map(task => {
+        const ctx = task.context || {};
+        const repoPath = (ctx.repo_paths && ctx.repo_paths[0]) || ctx.repo_path || '';
+        const jobType = ctx.job_type || '';
+        const extra = [jobType, repoPath].filter(Boolean).join(' | ');
+        return `
         <div class="task-card" onclick="viewTaskLogs('${task.task_id}')">
             <div class="title">${task.task_title}</div>
-            <div class="meta">${task.task_id.substring(0, 8)}...</div>
+            <div class="meta">${task.task_id.substring(0, 8)}...${extra ? ` | ${extra}` : ''}</div>
         </div>
-    `).join('');
+    `;
+    }).join('');
 }
 
 async function viewTaskLogs(taskId) {
@@ -1177,7 +1195,11 @@ async function selectTask(taskId) {
 async function assignTaskToAI(taskId) {
     logUiEvent('task_assign_to_ai', { task_id: taskId });
     try {
-        await fetch(`/api/tasks/${taskId}/assign`, { method: 'POST' });
+        const response = await fetch(`/api/tasks/${taskId}/assign`, { method: 'POST' });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(normalizeErrorDetail(payload) || `HTTP ${response.status}`);
+        }
         alert('Task assigned to AI queue');
         // Switch to orchestrator view
         switchView('orchestrator', 'system');
@@ -1480,7 +1502,7 @@ function filterTasksByStatus(tasks = []) {
     if (!activeTaskStatuses || activeTaskStatuses.size === 0) {
         return tasks;
     }
-    return tasks.filter(task => activeTaskStatuses.has(task.status));
+    return tasks.filter(task => activeTaskStatuses.has(normalizeTaskStatusValue(task.status)));
 }
 
 function populateTaskDetailForm(task) {
@@ -1498,7 +1520,7 @@ function populateTaskDetailForm(task) {
     }
 
     titleInput.value = task.title || '';
-    renderStatusOptions(statusSelect, task.status || 'todo');
+    renderStatusOptions(statusSelect, normalizeTaskStatusValue(task.status));
     priorityInput.value = task.priority || 5;
     if (metaEl) {
         metaEl.innerHTML = `
@@ -2094,7 +2116,7 @@ async function startEmbeddingRun() {
         const response = await fetch(`/api/project-tracking/${selectedProject}/index`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode, target }),
+            body: JSON.stringify({ mode, target, ...approvalMetadata('webui-project-embed') }),
         });
         const result = await response.json();
         if (!response.ok) {
@@ -2121,7 +2143,7 @@ async function upgradeProjectToGlobal() {
         const response = await fetch(`/api/project-tracking/${selectedProject}/index`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode, target: 'global' }),
+            body: JSON.stringify({ mode, target: 'global', ...approvalMetadata('webui-project-global-upgrade') }),
         });
         const result = await response.json();
         if (!response.ok) {
@@ -3233,6 +3255,7 @@ async function handleMemoryIndex(event) {
 
     const payload = {
         force_reindex: Boolean(forceInput?.checked),
+        ...approvalMetadata('webui-memory-code-index'),
     };
     const repoPath = repoInput ? repoInput.value.trim() : '';
     if (repoPath) {
@@ -3382,6 +3405,7 @@ async function handleGlobalEmbeddingSubmit(event) {
         repo_paths: repoPaths,
         mode: modeSelect ? modeSelect.value : 'auto',
         force_reindex: forceToggle ? forceToggle.checked : false,
+        ...approvalMetadata('webui-memory-global-index'),
     };
     if (codeModelInput && codeModelInput.value.trim()) {
         payload.code_model_id = codeModelInput.value.trim();

@@ -4,7 +4,7 @@ Endpoints for projects and tasks from PostgreSQL
 """
 import os
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Response
@@ -73,14 +73,14 @@ class ProjectCreate(BaseModel):
 class TaskBase(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1)
     status: Optional[str] = Field(default=None)
-    priority: Optional[int] = Field(default=None, ge=1, le=10)
+    priority: Optional[int] = Field(default=None, ge=1, le=5)
     project_id: Optional[str] = None
     parent_task_id: Optional[str] = None
 
 
 class TaskCreate(TaskBase):
     title: str = Field(..., min_length=1)
-    priority: Optional[int] = Field(default=5, ge=1, le=10)
+    priority: Optional[int] = Field(default=3, ge=1, le=5)
 
 
 class TaskUpdate(TaskBase):
@@ -103,6 +103,25 @@ def normalize_task_row(row: asyncpg.Record) -> Dict:
         if data.get(key):
             data[key] = str(data[key])
     return data
+
+
+_STATUS_ALIASES = {
+    "in_progress": "in-progress",
+}
+
+_ALLOWED_TASK_STATUSES = {"todo", "in-progress", "done"}
+
+
+def normalize_task_status(value: Optional[str], *, default: Optional[str] = None) -> str:
+    raw = (value or default or "").strip().lower()
+    status = _STATUS_ALIASES.get(raw, raw)
+    if status not in _ALLOWED_TASK_STATUSES:
+        allowed = ", ".join(sorted(_ALLOWED_TASK_STATUSES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid task status '{value}'. Allowed: {allowed}",
+        )
+    return status
 
 
 @router.post("/projects")
@@ -185,6 +204,10 @@ async def get_tasks(
     limit: int = 100
 ):
     """Get tasks with optional filters"""
+    normalized_status: Optional[str] = None
+    if status is not None:
+        normalized_status = normalize_task_status(status)
+
     conn = await get_db_connection()
     try:
         query = """
@@ -220,8 +243,8 @@ async def get_tasks(
             params.append(project_id)
             query += f" AND t.project_id = ${len(params)}"
 
-        if status:
-            params.append(status)
+        if normalized_status:
+            params.append(normalized_status)
             query += f" AND t.status = ${len(params)}"
 
         query += " ORDER BY t.created_at DESC LIMIT $%d" % (len(params) + 1)
@@ -242,8 +265,8 @@ async def create_task(payload: TaskCreate):
 
     project_uuid = normalize_uuid(payload.project_id) if payload.project_id else None
     parent_uuid = normalize_uuid(payload.parent_task_id) if payload.parent_task_id else None
-    priority = payload.priority or 5
-    status_value = (payload.status or "todo").strip().lower()
+    priority = payload.priority or 3
+    status_value = normalize_task_status(payload.status, default="todo")
 
     conn = await get_db_connection()
     try:
@@ -281,7 +304,7 @@ async def update_task(task_id: str, payload: TaskUpdate):
 
     if payload.status is not None:
         updates.append(f"status = ${len(values) + 1}")
-        values.append(payload.status.strip().lower())
+        values.append(normalize_task_status(payload.status))
 
     if payload.priority is not None:
         updates.append(f"priority = ${len(values) + 1}")
@@ -360,11 +383,65 @@ async def get_task(task_id: str):
 @router.post("/tasks/{task_id}/assign")
 async def assign_task_to_ai(task_id: str):
     """Assign a task to the AI queue"""
-    # TODO: Implement task assignment
-    # - Get task from PostgreSQL
-    # - Create task in queue using TaskQueue
-    # - Return queue task ID
-    raise HTTPException(status_code=501, detail="Task assignment not yet implemented")
+    task_uuid = normalize_uuid(task_id)
+    conn = await get_db_connection()
+    try:
+        row = await conn.fetchrow(
+            """
+            SELECT id, title, status, priority, project_id, details_md_path
+            FROM tasks
+            WHERE id = $1
+            """,
+            task_uuid,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        task = normalize_task_row(row)
+        if not task.get("project_id"):
+            raise HTTPException(status_code=400, detail="Task must belong to a project before assigning to AI")
+
+        details_text = ""
+        details_path = row.get("details_md_path")
+        if details_path:
+            try:
+                with open(details_path, "r", encoding="utf-8") as details_file:
+                    details_text = details_file.read().strip()
+            except OSError:
+                details_text = ""
+
+        description = task["title"]
+        if details_text:
+            description = f"{description}\n\n{details_text}"
+
+        queue_payload = {
+            "project_id": task["project_id"],
+            "title": task["title"],
+            "description": description,
+            "priority": max(1, min(5, int(task.get("priority") or 3))),
+            "approved": True,
+            "approved_by": "webui-assign",
+        }
+        result = await orchestrator_post("/tasks/queue", queue_payload)
+
+        await conn.execute(
+            """
+            UPDATE tasks
+            SET status = 'in-progress', modified_at = timezone('utc', now())
+            WHERE id = $1
+            """,
+            task_uuid,
+        )
+    finally:
+        await conn.close()
+
+    return {
+        "status": "queued",
+        "task_id": task["id"],
+        "queue_task_id": result.get("task_id"),
+    }
+
+
 @router.delete("/projects/{project_id}", status_code=204)
 async def delete_project_route(project_id: str):
     """Delete a project and its tasks."""

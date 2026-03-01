@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     worker_threads: int = 4
     task_poll_interval: int = 5  # seconds
     task_queue_path: str = "/app/task_queue"
+    require_queue_approval: bool = True
 
     # LLM Router
     llama_cpp_host: str = "host.docker.internal"
@@ -713,6 +714,24 @@ async def process_pending_tasks():
                     task_id = task_data['task_id']
                     cli_preference = task_data.get('cli_preference', 'claude')
                     project_id = task_data.get('project_id')
+                    approval_meta = (task_data.get("context") or {}).get("approval") or {}
+                    is_approved = bool(approval_meta.get("approved"))
+                    approved_by = (approval_meta.get("approved_by") or "").strip()
+
+                    if settings.require_queue_approval and (not is_approved or not approved_by):
+                        logger.warning(
+                            "Rejecting unapproved task %s (approval metadata missing).",
+                            task_id[:8],
+                        )
+                        task_queue.fail_task(
+                            task_id,
+                            error={
+                                "type": "ApprovalRequired",
+                                "message": "Task lacks explicit approval metadata.",
+                            },
+                            exit_code=1,
+                        )
+                        continue
 
                     if project_id and project_locks.get(project_id):
                         cli_preference = project_locks[project_id]
@@ -888,6 +907,8 @@ class CodeIndexRequest(BaseModel):
     repo_path: Optional[str] = None
     force_reindex: bool = False
     model_id: Optional[str] = None
+    approved: bool = False
+    approved_by: Optional[str] = None
 
 
 class ManualTaskCreate(BaseModel):
@@ -897,6 +918,8 @@ class ManualTaskCreate(BaseModel):
     cli_preference: str = "claude"
     priority: int = Field(default=3, ge=1, le=5)
     working_dir: Optional[str] = None
+    approved: bool = False
+    approved_by: Optional[str] = None
 
 
 class ModelSelectionRequest(BaseModel):
@@ -930,6 +953,8 @@ class EmbeddingJobRequest(BaseModel):
     code_model_id: Optional[str] = None
     text_model_id: Optional[str] = None
     force_reindex: bool = False
+    approved: bool = False
+    approved_by: Optional[str] = None
 
 
 class GlobalEmbeddingRequest(BaseModel):
@@ -939,6 +964,23 @@ class GlobalEmbeddingRequest(BaseModel):
     code_model_id: Optional[str] = None
     text_model_id: Optional[str] = None
     force_reindex: bool = False
+    approved: bool = False
+    approved_by: Optional[str] = None
+
+
+def _require_explicit_approval(approved: bool, approved_by: Optional[str], action: str) -> dict:
+    if not settings.require_queue_approval:
+        return {"approved": True, "approved_by": approved_by or "approval-gate-disabled"}
+    approver = (approved_by or "").strip()
+    if not approved or not approver:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Queue approval required for {action}. "
+                "Resubmit with approved=true and approved_by='<human-id>'."
+            ),
+        )
+    return {"approved": True, "approved_by": approver}
 
 
 # API Endpoints
@@ -988,6 +1030,11 @@ async def get_tasks(status: str | None = None, limit: int = 100):
 @app.post("/tasks/queue")
 async def queue_manual_task(payload: ManualTaskCreate):
     """Create a filesystem queue entry so a CLI worker can pick it up."""
+    approval = _require_explicit_approval(
+        payload.approved,
+        payload.approved_by,
+        action="manual task queueing",
+    )
     task_queue = TaskQueue()
     try:
         task_id = task_queue.create_task(
@@ -997,6 +1044,7 @@ async def queue_manual_task(payload: ManualTaskCreate):
             priority=payload.priority,
             cli_preference=payload.cli_preference,
             working_dir=payload.working_dir,
+            context={"approval": approval},
         )
     except Exception as exc:
         logger.error("Failed to queue manual task", exc_info=True)
@@ -1108,6 +1156,11 @@ async def update_project_tracking(project_id: str, payload: ProjectTrackingUpdat
 @app.post("/projects/{project_id}/tracking/index")
 async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
     """Create a task to (re)index a project's repository."""
+    approval = _require_explicit_approval(
+        payload.approved,
+        payload.approved_by,
+        action="project embedding",
+    )
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await ensure_project_exists(conn, project_id)
@@ -1157,8 +1210,9 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
 
     task_queue = TaskQueue(queue_path=settings.task_queue_path)
     db_host, db_port = _worker_db_target("local")
+    embeddings_script = Path(settings.host_repo_root) / "memory" / "run_embeddings.py"
     base_command = (
-        "python memory/run_embeddings.py"
+        f"python \"{embeddings_script}\""
         f" --project-id {project_id}"
         f" --mode {payload.mode}"
         f" --target {payload.target}"
@@ -1200,6 +1254,7 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
             f"{base_command} --repo-path \"{path}\""
             for path in repo_paths
         ),
+        "approval": approval,
     }
 
     task_id = task_queue.create_task(
@@ -1222,6 +1277,11 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
 @app.post("/memory/global/index")
 async def queue_global_embedding(payload: GlobalEmbeddingRequest):
     """Create a task to index global embeddings for arbitrary paths."""
+    approval = _require_explicit_approval(
+        payload.approved,
+        payload.approved_by,
+        action="global embedding",
+    )
     repo_paths = payload.repo_paths or []
     if payload.repo_path:
         repo_paths.append(payload.repo_path)
@@ -1233,8 +1293,9 @@ async def queue_global_embedding(payload: GlobalEmbeddingRequest):
     text_model_id = normalize_embedding_model_id(payload.text_model_id) or "BAAI/bge-base-en-v1.5"
 
     db_host, db_port = _worker_db_target("local")
+    embeddings_script = Path(settings.host_repo_root) / "memory" / "run_embeddings.py"
     base_command = (
-        "python memory/run_embeddings.py"
+        f"python \"{embeddings_script}\""
         f" --mode {payload.mode}"
         " --target global"
         f" --code-model \"{code_model_id}\""
@@ -1267,11 +1328,13 @@ async def queue_global_embedding(payload: GlobalEmbeddingRequest):
         "text_model_id": text_model_id,
         "force_reindex": payload.force_reindex,
         "command": command,
+        "approval": approval,
     }
 
+    first_repo = Path(repo_paths[0]).name if len(repo_paths) == 1 else f"{len(repo_paths)} paths"
     task_id = task_queue.create_task(
         project_id=GLOBAL_TASK_PROJECT_ID,
-        task_title="Embed global repository",
+        task_title=f"Embed global repository - {first_repo}",
         description=description,
         priority=TaskPriority.HIGH,
         cli_preference="local",
@@ -1793,6 +1856,11 @@ async def code_search_endpoint(project_id: str, payload: CodeSearchRequest):
 @app.post("/memory/code-index/{project_id}")
 async def code_index_endpoint(project_id: str, payload: CodeIndexRequest):
     """Queue a host-side code indexing job for the given project."""
+    approval = _require_explicit_approval(
+        payload.approved,
+        payload.approved_by,
+        action="project code indexing",
+    )
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await ensure_project_exists(conn, project_id)
@@ -1807,11 +1875,13 @@ async def code_index_endpoint(project_id: str, payload: CodeIndexRequest):
         raise HTTPException(status_code=400, detail="repo_path is required for code indexing")
 
     model_id = payload.model_id or tracking.get("embedding_model_id") or "microsoft/codebert-base"
+    db_host, db_port = _worker_db_target("local")
+    code_index_script = Path(settings.host_repo_root) / "memory" / "code_indexer.py"
     command = (
-        f"python memory/code_indexer.py --repo-path \"{repo_path}\" "
-        f"--project-id {project_id} --db-host localhost --db-port 5432 "
-        f"--db-name knowledge_manager --db-user km_user "
-        f"--db-password \"$KM_POSTGRES_PASSWORD\" --model \"{model_id}\""
+        f"python \"{code_index_script}\" --repo-path \"{repo_path}\" "
+        f"--project-id {project_id} --db-host \"{db_host}\" --db-port {db_port} "
+        f"--db-name \"{settings.postgres_db}\" --db-user \"{settings.postgres_user}\" "
+        f"--db-password \"{settings.postgres_password}\" --model \"{model_id}\""
     )
     description = (
         "Run code-aware repository indexing.\n"
@@ -1827,6 +1897,7 @@ async def code_index_endpoint(project_id: str, payload: CodeIndexRequest):
         "model_id": model_id,
         "force_reindex": payload.force_reindex,
         "command": command,
+        "approval": approval,
     }
 
     task_queue = TaskQueue(queue_path=settings.task_queue_path)
@@ -1836,7 +1907,7 @@ async def code_index_endpoint(project_id: str, payload: CodeIndexRequest):
         description=description,
         priority=TaskPriority.HIGH,
         cli_preference="local",
-        working_dir=repo_path,
+        working_dir=settings.host_repo_root,
         context=context,
     )
     return {"status": "queued", "task_id": task_id}

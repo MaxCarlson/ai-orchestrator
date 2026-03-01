@@ -43,6 +43,8 @@ class GlobalEmbeddingPayload(BaseModel):
     code_model_id: Optional[str] = None
     text_model_id: Optional[str] = None
     force_reindex: bool = False
+    approved: bool = False
+    approved_by: Optional[str] = None
 
 
 class MemoryAddPayload(BaseModel):
