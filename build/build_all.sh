@@ -13,14 +13,20 @@ if [ -f "$REPO_ROOT/.env" ]; then
     set +a
 fi
 
+# The repo's .env is shell-oriented and may contain constructs that Docker
+# Compose's stricter .env parser rejects. Source it in Bash, then point Compose
+# at an empty env file so interpolation comes from the current process env.
+COMPOSE_EMPTY_ENV="$(mktemp)"
+trap 'rm -f "$COMPOSE_EMPTY_ENV"' EXIT
+
 echo "==> Building containers (docker compose build --pull)"
-docker compose build --pull
+docker compose --env-file "$COMPOSE_EMPTY_ENV" build --pull
 
 echo "==> Starting services (docker compose up -d)"
-docker compose up -d
+docker compose --env-file "$COMPOSE_EMPTY_ENV" up -d
 
 echo "==> Current service status"
-docker compose ps
+docker compose --env-file "$COMPOSE_EMPTY_ENV" ps
 
 ORCH_PORT="${ORCHESTRATOR_PORT:-8000}"
 KOWEB_PORT="${KO_WEB_PORT:-3001}"
