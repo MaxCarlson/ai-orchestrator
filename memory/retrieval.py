@@ -245,8 +245,8 @@ async def hybrid_search(
                 for score, row in scored
                 if score > 0
             ]
-    except ImportError:
-        logger.warning("rank-bm25 not installed; falling back to dense-only retrieval")
+    except Exception:
+        logger.warning("BM25 retrieval failed; falling back to dense-only retrieval", exc_info=True)
 
     # Merge via RRF
     if bm25_results:
@@ -257,7 +257,7 @@ async def hybrid_search(
     # Optional cross-encoder reranking
     if use_reranker and reranker is not None:
         try:
-            pairs = [(query, c["content"]) for c in candidates[:candidate_k]]
+            pairs = [(query, c["content"]) for c in candidates]
             rerank_scores: list[float] = reranker.predict(pairs).tolist()
             for candidate, score in zip(candidates, rerank_scores):
                 candidate["rerank_score"] = score
