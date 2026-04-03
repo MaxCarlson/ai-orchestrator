@@ -167,3 +167,55 @@ async def list_embedding_runs(
 async def queue_code_index(project_id: str, payload: dict):
     """Queue code indexing for a project."""
     return await orchestrator_post(f"/memory/code-index/{project_id}", payload)
+
+
+class TextSearchPayload(BaseModel):
+    query: str
+    top_k: int = 10
+    use_reranker: bool = True
+    table: str = "text_chunks"
+
+
+class TextIndexPayload(BaseModel):
+    repo_path: str
+    mode: str = "text"
+    target: str = "project"
+    force_reindex: bool = False
+    include_pdfs: bool = True
+
+
+class IngestTextPayload(BaseModel):
+    content: str
+    source_label: str = "api_direct"
+
+
+@router.post("/text-search/{project_id}")
+async def text_search(project_id: str, payload: TextSearchPayload):
+    """Run a text/semantic search over text chunks for a project."""
+    return await orchestrator_post(f"/memory/text-search/{project_id}", payload.dict())
+
+
+@router.post("/text-index/{project_id}")
+async def text_index(project_id: str, payload: TextIndexPayload):
+    """Queue text indexing for a project."""
+    return await orchestrator_post(f"/memory/text-index/{project_id}", payload.dict())
+
+
+@router.post("/ingest-text/{project_id}")
+async def ingest_text(project_id: str, payload: IngestTextPayload):
+    """Ingest raw text content directly into a project's text chunks."""
+    return await orchestrator_post(f"/memory/ingest-text/{project_id}", payload.dict())
+
+
+@router.get("/text-chunks/{project_id}")
+async def list_text_chunks(
+    project_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    file_path: Optional[str] = None,
+):
+    """Return text chunks for a project."""
+    params: dict = {"limit": limit, "offset": offset}
+    if file_path:
+        params["file_path"] = file_path
+    return await orchestrator_get(f"/memory/text-chunks/{project_id}", params=params)

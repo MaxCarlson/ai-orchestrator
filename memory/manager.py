@@ -99,6 +99,12 @@ async def initialize_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(models.CREATE_GLOBAL_EMBEDDING_INDEX)
     await conn.execute(models.CREATE_CODE_CHUNKS_INDEXES)
     await conn.execute(models.CREATE_GLOBAL_CODE_CHUNKS_INDEXES)
+    await conn.execute(models.CREATE_EMBEDDING_MODELS_TABLE)
+    await conn.execute(models.SEED_EMBEDDING_MODELS)
+    await conn.execute(models.CREATE_TEXT_CHUNKS_TABLE)
+    await conn.execute(models.CREATE_GLOBAL_TEXT_CHUNKS_TABLE)
+    await conn.execute(models.CREATE_TEXT_CHUNKS_INDEXES)
+    await conn.execute(models.CREATE_GLOBAL_TEXT_CHUNKS_INDEXES)
 
 
 class MemoryManager:

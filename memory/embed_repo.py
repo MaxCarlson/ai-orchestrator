@@ -203,6 +203,7 @@ async def embed_repository(
     source_key: Optional[str] = None,
     source_project_id: Optional[str] = None,
     batch_size: int = 8,
+    include_pdfs: bool = True,
 ) -> Dict[str, int]:
     """Recursively embed all files in a repository and store them as memories.
 
@@ -213,6 +214,7 @@ async def embed_repository(
     :param code_model_name: Hugging Face model identifier for code embedding.
     :param text_model_name: Hugging Face model identifier for prose embedding.
     :param batch_size: Number of chunks to embed at once.
+    :param include_pdfs: Whether to include PDF files in text indexing.
     """
     logger.info(f"Embedding repository at {repo_path}")
     code_embedder, text_embedder = load_models(code_model_name, text_model_name)
@@ -235,6 +237,9 @@ async def embed_repository(
         raise RuntimeError("source_key is required for global embeddings")
 
     for file_path in files:
+        if not include_pdfs and file_path.suffix.lower() == ".pdf":
+            stats["unsupported_files"] += 1
+            continue
         model_type = select_model_for_file(file_path)
         if model_type == "code":
             stats["code_files"] += 1
