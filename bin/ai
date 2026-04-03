@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Repo-managed CLI for project text ingestion."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import asyncpg
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from memory.manager import initialize_schema
+from memory.source_ingestion import ingest_local_file
+
+
+def parse_args() -> argparse.Namespace:
+    argv = sys.argv[1:]
+    if argv and argv[0] in {"-i", "--ingest"}:
+        argv = ["ingest", *argv[1:]]
+
+    parser = argparse.ArgumentParser(description="AI Orchestrator project ingestion CLI")
+    subparsers = parser.add_subparsers(dest="command")
+
+    ingest = subparsers.add_parser("ingest", help="Ingest one or more files into a project")
+    ingest.add_argument("paths", nargs="+")
+    ingest.add_argument("-p", "--project")
+    ingest.add_argument("-s", "--source-label")
+    ingest.add_argument("-c", "--conversation", action="store_true")
+    ingest.add_argument("-r", "--replace", action="store_true")
+    ingest.add_argument("-d", "--dedupe", action="store_true")
+    ingest.add_argument("-j", "--json", action="store_true", dest="json_output")
+    ingest.add_argument("-y", "--yes", action="store_true")
+    ingest.add_argument("--conversation-format")
+    ingest.add_argument("--db-host", default=os.getenv("POSTGRES_HOST", "localhost"))
+    ingest.add_argument("--db-port", type=int, default=int(os.getenv("POSTGRES_PORT", "5432")))
+    ingest.add_argument("--db-name", default=os.getenv("POSTGRES_DB", "knowledge_manager"))
+    ingest.add_argument("--db-user", default=os.getenv("POSTGRES_USER", "km_user"))
+    ingest.add_argument("--db-password", default=os.getenv("POSTGRES_PASSWORD"))
+    return parser.parse_args(argv)
+
+
+async def fetch_projects(conn: asyncpg.Connection) -> list[dict]:
+    rows = await conn.fetch(
+        """
+        SELECT p.id, p.name, p.status, MAX(t.modified_at) AS latest_task_activity
+        FROM projects p
+        LEFT JOIN tasks t ON t.project_id = p.id
+        GROUP BY p.id
+        ORDER BY p.name
+        """
+    )
+    return [dict(row) for row in rows]
+
+
+def resolve_default_project(projects: list[dict], requested: str | None) -> dict | None:
+    if not requested:
+        requested = os.getenv("AI_DEFAULT_PROJECT_ID") or os.getenv("AI_DEFAULT_PROJECT")
+    if not requested:
+        return None
+    requested_lower = requested.lower()
+    for project in projects:
+        if str(project["id"]) == requested or str(project["name"]).lower() == requested_lower:
+            return project
+    return None
+
+
+def choose_with_fzf(projects: list[dict]) -> dict | None:
+    if not sys.stdin.isatty() or not shutil.which("fzf"):
+        return None
+    entries = [f"{project['name']}\t{project['id']}" for project in projects]
+    proc = subprocess.run(
+        ["fzf", "--with-nth=1", "--delimiter=\t", "--prompt=Project> "],
+        input="\n".join(entries),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    selected_id = proc.stdout.strip().split("\t")[-1]
+    return next((project for project in projects if str(project["id"]) == selected_id), None)
+
+
+def choose_with_prompt(projects: list[dict]) -> dict:
+    print("Select a project:")
+    for index, project in enumerate(projects, start=1):
+        print(f"{index}. {project['name']} ({project['id']})")
+    while True:
+        choice = input("> ").strip()
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(projects):
+                return projects[idx - 1]
+        print("Enter a valid project number.")
+
+
+async def resolve_project(conn: asyncpg.Connection, requested: str | None, non_interactive: bool) -> dict:
+    projects = await fetch_projects(conn)
+    if not projects:
+        raise RuntimeError("No projects found")
+    explicit = resolve_default_project(projects, requested)
+    if explicit:
+        return explicit
+    if non_interactive or not sys.stdin.isatty():
+        raise RuntimeError("No project specified and interactive selection is unavailable")
+    return choose_with_fzf(projects) or choose_with_prompt(projects)
+
+
+async def run_ingest(args: argparse.Namespace) -> int:
+    if not args.db_password:
+        raise RuntimeError("POSTGRES_PASSWORD or --db-password is required")
+
+    pool = await asyncpg.create_pool(
+        host=args.db_host,
+        port=args.db_port,
+        user=args.db_user,
+        password=args.db_password,
+        database=args.db_name,
+    )
+    try:
+        async with pool.acquire() as conn:
+            await initialize_schema(conn)
+            project = await resolve_project(conn, args.project, args.yes)
+
+        results = []
+        for raw_path in args.paths:
+            path = Path(raw_path).expanduser().resolve()
+            result = await ingest_local_file(
+                pool,
+                project_id=str(project["id"]),
+                path=path,
+                source_label=args.source_label if len(args.paths) == 1 else None,
+                conversation=args.conversation,
+                conversation_format=args.conversation_format,
+                replace_existing=args.replace,
+                dedupe_by_hash=args.dedupe,
+            )
+            result["path"] = str(path)
+            results.append(result)
+
+        payload = {"project_id": str(project["id"]), "project_name": project["name"], "results": results}
+        if args.json_output:
+            print(json.dumps(payload, default=str))
+        else:
+            print(f"Project: {project['name']} ({project['id']})")
+            for result in results:
+                print(f"{result['path']}: {result['status']} ({result.get('chunk_count', 0)} chunks)")
+        return 0
+    finally:
+        await pool.close()
+
+
+async def amain() -> int:
+    args = parse_args()
+    if args.command != "ingest":
+        print("Use `ai ingest ...` or `ai -i ...`.", file=sys.stderr)
+        return 2
+    return await run_ingest(args)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(asyncio.run(amain()))
+    except KeyboardInterrupt:
+        raise SystemExit(130)

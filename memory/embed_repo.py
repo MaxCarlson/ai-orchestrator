@@ -60,6 +60,7 @@ import numpy as np
 # modify load_models accordingly.
 
 from memory.manager import MemoryManager, initialize_schema
+from memory.pgvector_utils import to_pgvector_literal
 
 
 logger = logging.getLogger(__name__)
@@ -164,7 +165,7 @@ async def _insert_global_memory(
         """,
         content,
         content_hash,
-        np.asarray(embedding, dtype=np.float32),
+        to_pgvector_literal(embedding),
         source_key,
         source_project_id,
         created_by,

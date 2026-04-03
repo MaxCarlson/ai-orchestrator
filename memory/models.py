@@ -256,10 +256,30 @@ VALUES
 ON CONFLICT (id) DO NOTHING;
 """
 
+CREATE_PROJECT_TEXT_SOURCES_TABLE = """
+CREATE TABLE IF NOT EXISTS project_text_sources (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source_label TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    original_filename TEXT,
+    stored_path TEXT,
+    mime_type TEXT,
+    sha256 TEXT,
+    ingest_method TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (project_id, source_label)
+);
+"""
+
 CREATE_TEXT_CHUNKS_TABLE = """
 CREATE TABLE IF NOT EXISTS text_chunks (
     id BIGSERIAL PRIMARY KEY,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source_id UUID NULL REFERENCES project_text_sources(id) ON DELETE CASCADE,
     file_path TEXT NOT NULL,
     chunk_index INTEGER NOT NULL,
     chunk_type TEXT NOT NULL DEFAULT 'text',
@@ -283,6 +303,7 @@ CREATE TABLE IF NOT EXISTS global_text_chunks (
     id BIGSERIAL PRIMARY KEY,
     source_key TEXT NOT NULL,
     source_project_id UUID NULL REFERENCES projects(id) ON DELETE SET NULL,
+    source_id UUID NULL REFERENCES project_text_sources(id) ON DELETE CASCADE,
     file_path TEXT NOT NULL,
     chunk_index INTEGER NOT NULL,
     chunk_type TEXT NOT NULL DEFAULT 'text',
@@ -316,6 +337,14 @@ ON text_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 """
 
+ALTER_TEXT_CHUNKS_SOURCE_LINKS = """
+ALTER TABLE text_chunks
+ADD COLUMN IF NOT EXISTS source_id UUID NULL REFERENCES project_text_sources(id) ON DELETE CASCADE;
+
+ALTER TABLE global_text_chunks
+ADD COLUMN IF NOT EXISTS source_id UUID NULL REFERENCES project_text_sources(id) ON DELETE CASCADE;
+"""
+
 CREATE_GLOBAL_TEXT_CHUNKS_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_global_text_chunks_source_status
 ON global_text_chunks (source_key, embedding_status);
@@ -326,4 +355,18 @@ ON global_text_chunks (content_hash);
 CREATE INDEX IF NOT EXISTS idx_global_text_chunks_embedding
 ON global_text_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
+"""
+
+CREATE_PROJECT_TEXT_SOURCES_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_project_text_sources_project_created
+ON project_text_sources (project_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_project_text_sources_project_sha256
+ON project_text_sources (project_id, sha256);
+
+CREATE INDEX IF NOT EXISTS idx_text_chunks_project_source
+ON text_chunks (project_id, source_id);
+
+CREATE INDEX IF NOT EXISTS idx_global_text_chunks_source_id
+ON global_text_chunks (source_id);
 """

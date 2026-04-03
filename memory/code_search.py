@@ -9,6 +9,8 @@ from typing import Any, Dict, List
 import asyncpg
 import numpy as np
 
+from memory.pgvector_utils import to_pgvector_literal
+
 
 async def search_code(
     conn: asyncpg.Connection,
@@ -31,7 +33,7 @@ async def search_code(
         ORDER BY embedding <=> $1
         LIMIT $3
         """,
-        query_embedding,
+        to_pgvector_literal(query_embedding),
         project_id,
         top_k,
     )

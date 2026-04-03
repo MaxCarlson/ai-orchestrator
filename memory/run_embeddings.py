@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 import asyncpg
 
 from memory.code_indexer import index_repository
-from memory.embed_repo import embed_repository
+from memory.ingest_pipeline import index_text_documents
 from memory.manager import initialize_schema
 
 
@@ -268,20 +268,37 @@ async def run_embeddings() -> None:
                 stats["code"]["global"] = code_stats
 
         if mode in {"auto", "text"}:
-            text_stats = await embed_repository(
-                repo_path=args.repo_path,
-                project_id=args.project_id,
-                pool=pool,
-                code_model_name=args.code_model,
-                text_model_name=args.text_model,
-                scope="text",
-                target=target,
-                source_key=source_key,
-                source_project_id=args.project_id,
-                batch_size=args.batch_size,
-                include_pdfs=args.include_pdfs,
-            )
-            stats["text"]["summary"] = text_stats
+            if target in {"project", "both"} and args.project_id:
+                project_text_stats = await index_text_documents(
+                    doc_path=args.repo_path,
+                    owner_id=args.project_id,
+                    pool=pool,
+                    model_name=args.text_model,
+                    batch_size=args.batch_size,
+                    force_reindex=args.force_reindex,
+                    table="text_chunks",
+                    owner_column="project_id",
+                    include_pdfs=args.include_pdfs,
+                )
+                stats["text"]["project"] = project_text_stats
+            if target in {"global", "both"}:
+                global_text_stats = await index_text_documents(
+                    doc_path=args.repo_path,
+                    owner_id=source_key,
+                    pool=pool,
+                    model_name=args.text_model,
+                    batch_size=args.batch_size,
+                    force_reindex=args.force_reindex,
+                    table="global_text_chunks",
+                    owner_column="source_key",
+                    source_project_id=args.project_id,
+                    include_pdfs=args.include_pdfs,
+                )
+                stats["text"]["global"] = global_text_stats
+            stats["text"]["summary"] = {
+                "project": stats["text"].get("project"),
+                "global": stats["text"].get("global"),
+            }
 
         async with pool.acquire() as conn:
             if run_id:

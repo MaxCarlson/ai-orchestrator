@@ -18,13 +18,15 @@ import asyncio
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterable
 
 import asyncpg
 import numpy as np
+from langchain_core.documents import Document
 
 from memory.langchain_loaders import load_all_documents, load_raw_text
 from memory.langchain_splitters import split_documents
+from memory.pgvector_utils import to_pgvector_literal
 from memory.text_embeddings import TextEmbedder
 
 
@@ -65,6 +67,24 @@ async def _fetch_existing_chunks(
     return {row["chunk_index"]: row["content_hash"] for row in rows}
 
 
+async def _fetch_indexed_file_paths(
+    conn: asyncpg.Connection,
+    table: str,
+    owner_column: str,
+    owner_id: str,
+) -> set[str]:
+    """Return all file paths currently indexed for an owner scope."""
+    rows = await conn.fetch(
+        f"""
+        SELECT DISTINCT file_path
+        FROM {table}
+        WHERE {owner_column} = $1
+        """,
+        owner_id,
+    )
+    return {row["file_path"] for row in rows}
+
+
 async def _delete_stale_chunks(
     conn: asyncpg.Connection,
     table: str,
@@ -102,6 +122,38 @@ async def _delete_stale_chunks(
     return deleted
 
 
+async def _delete_removed_files(
+    conn: asyncpg.Connection,
+    table: str,
+    owner_column: str,
+    owner_id: str,
+    current_file_paths: set[str],
+) -> int:
+    """Delete all chunks for files no longer present in the owner scope."""
+    previous_file_paths = await _fetch_indexed_file_paths(conn, table, owner_column, owner_id)
+    deleted_files = previous_file_paths - current_file_paths
+    if not deleted_files:
+        return 0
+
+    result = await conn.execute(
+        f"""
+        DELETE FROM {table}
+        WHERE {owner_column} = $1
+          AND file_path = ANY($2::text[])
+        """,
+        owner_id,
+        list(deleted_files),
+    )
+    deleted = int(result.split()[-1]) if result else 0
+    logger.info(
+        "Deleted %d chunks from %s for %d removed files",
+        deleted,
+        table,
+        len(deleted_files),
+    )
+    return deleted
+
+
 async def _upsert_text_chunk(
     conn: asyncpg.Connection,
     table: str,
@@ -111,6 +163,7 @@ async def _upsert_text_chunk(
     embedding: np.ndarray,
     model_name: str,
     source_project_id: str | None = None,
+    source_id: str | None = None,
 ) -> None:
     """Upsert a single text chunk into the target table.
 
@@ -126,18 +179,20 @@ async def _upsert_text_chunk(
     """
     meta = chunk_doc.metadata
     content = chunk_doc.page_content
+    vector_literal = to_pgvector_literal(embedding)
 
     if table == "global_text_chunks":
         await conn.execute(
             """
             INSERT INTO global_text_chunks (
-                source_key, source_project_id, file_path, chunk_index,
+                source_key, source_project_id, source_id, file_path, chunk_index,
                 chunk_type, header_context, start_char, end_char,
                 content, content_hash, source_type,
                 embedding, embedding_model, embedding_status, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'ready', NOW())
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'ready', NOW())
             ON CONFLICT (source_key, file_path, chunk_index)
             DO UPDATE SET
+                source_id        = EXCLUDED.source_id,
                 chunk_type       = EXCLUDED.chunk_type,
                 header_context   = EXCLUDED.header_context,
                 start_char       = EXCLUDED.start_char,
@@ -152,6 +207,7 @@ async def _upsert_text_chunk(
             """,
             owner_id,
             source_project_id,
+            source_id,
             meta.get("file_path", meta.get("source", "")),
             meta["chunk_index"],
             meta.get("chunk_type", "text"),
@@ -161,20 +217,21 @@ async def _upsert_text_chunk(
             content,
             meta["content_hash"],
             meta.get("source_type", "file"),
-            embedding,
+            vector_literal,
             model_name,
         )
     else:
         await conn.execute(
             """
             INSERT INTO text_chunks (
-                project_id, file_path, chunk_index,
+                project_id, source_id, file_path, chunk_index,
                 chunk_type, header_context, start_char, end_char,
                 content, content_hash, source_type,
                 embedding, embedding_model, embedding_status, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ready', NOW())
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'ready', NOW())
             ON CONFLICT (project_id, file_path, chunk_index)
             DO UPDATE SET
+                source_id        = EXCLUDED.source_id,
                 chunk_type       = EXCLUDED.chunk_type,
                 header_context   = EXCLUDED.header_context,
                 start_char       = EXCLUDED.start_char,
@@ -188,6 +245,7 @@ async def _upsert_text_chunk(
                 updated_at       = NOW()
             """,
             owner_id,
+            source_id,
             meta.get("file_path", meta.get("source", "")),
             meta["chunk_index"],
             meta.get("chunk_type", "text"),
@@ -197,9 +255,110 @@ async def _upsert_text_chunk(
             content,
             meta["content_hash"],
             meta.get("source_type", "file"),
-            embedding,
+            vector_literal,
             model_name,
         )
+
+
+async def _invalidate_bm25_scope(table: str, owner_column: str, owner_id: str) -> None:
+    """Invalidate BM25 cache for a modified owner scope."""
+    try:
+        from memory.retrieval import invalidate_bm25_cache  # noqa: PLC0415
+
+        invalidate_bm25_cache(table, owner_column, owner_id)
+    except ImportError:
+        pass
+
+
+async def _index_split_documents(
+    chunks: Iterable[Document],
+    owner_id: str,
+    pool: asyncpg.Pool,
+    *,
+    model_name: str = DEFAULT_MODEL,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    force_reindex: bool = False,
+    table: str = "text_chunks",
+    owner_column: str = "project_id",
+    source_project_id: str | None = None,
+    source_id: str | None = None,
+) -> dict[str, Any]:
+    """Index already-split documents with per-file reconciliation."""
+    embedder = TextEmbedder(model_name=model_name)
+    chunks_by_file: dict[str, list[Document]] = defaultdict(list)
+    for chunk in chunks:
+        source = chunk.metadata.get("file_path", chunk.metadata.get("source", ""))
+        chunks_by_file[source].append(chunk)
+
+    current_file_paths = set(chunks_by_file)
+    total_files = len(current_file_paths)
+    stats: dict[str, Any] = {
+        "files_scanned": total_files,
+        "files_processed": 0,
+        "files_indexed": 0,
+        "chunks_indexed": 0,
+        "chunks_skipped": 0,
+        "chunks_deleted": 0,
+    }
+
+    async with pool.acquire() as conn:
+        stats["chunks_deleted"] += await _delete_removed_files(
+            conn,
+            table,
+            owner_column,
+            owner_id,
+            current_file_paths,
+        )
+
+    for processed_idx, file_path in enumerate(chunks_by_file, start=1):
+        file_chunks = chunks_by_file[file_path]
+        stats["files_processed"] = processed_idx
+
+        async with pool.acquire() as conn:
+            existing = await _fetch_existing_chunks(conn, table, owner_column, owner_id, file_path)
+
+        pending: list[Document] = []
+        for chunk_doc in file_chunks:
+            idx = chunk_doc.metadata["chunk_index"]
+            existing_hash = existing.get(idx)
+            if existing_hash == chunk_doc.metadata["content_hash"] and not force_reindex:
+                stats["chunks_skipped"] += 1
+            else:
+                pending.append(chunk_doc)
+
+        if pending:
+            for batch_start in range(0, len(pending), batch_size):
+                batch = pending[batch_start : batch_start + batch_size]
+                embeddings = embedder.embed_batch([doc.page_content for doc in batch])
+                async with pool.acquire() as conn:
+                    for chunk_doc, embedding in zip(batch, embeddings):
+                        await _upsert_text_chunk(
+                            conn,
+                            table,
+                            owner_column,
+                            owner_id,
+                            chunk_doc,
+                            embedding,
+                            model_name,
+                            source_project_id=source_project_id,
+                            source_id=source_id,
+                        )
+                stats["chunks_indexed"] += len(batch)
+            stats["files_indexed"] += 1
+
+        async with pool.acquire() as conn:
+            stats["chunks_deleted"] += await _delete_stale_chunks(
+                conn,
+                table,
+                owner_column,
+                owner_id,
+                file_path,
+                len(file_chunks),
+            )
+
+    if stats["chunks_indexed"] or stats["chunks_deleted"]:
+        await _invalidate_bm25_scope(table, owner_column, owner_id)
+    return stats
 
 
 async def index_text_documents(
@@ -242,93 +401,31 @@ async def index_text_documents(
         Stats dict with keys: files_scanned, files_processed, files_indexed,
         chunks_indexed, chunks_skipped, chunks_deleted.
     """
-    embedder = TextEmbedder(model_name=model_name)
-
-    # Load and split all documents upfront
     raw_docs = load_all_documents(doc_path, include_pdfs=include_pdfs)
     chunks = split_documents(raw_docs)
-
-    # Group chunks by source file for per-file reconciliation
-    chunks_by_file: dict[str, list] = defaultdict(list)
-    for chunk in chunks:
-        source = chunk.metadata.get("file_path", chunk.metadata.get("source", ""))
-        chunks_by_file[source].append(chunk)
-
-    files = list(chunks_by_file.keys())
-    total_files = len(files)
-
-    stats: dict[str, Any] = {
-        "files_scanned": len({
-            d.metadata.get("file_path", d.metadata.get("source", ""))
-            for d in raw_docs
-        }),
-        "files_processed": 0,
-        "files_indexed": 0,
-        "chunks_indexed": 0,
-        "chunks_skipped": 0,
-        "chunks_deleted": 0,
-    }
-
-    logger.info(
-        "Indexing %d documents (%d source files) into %s",
-        len(raw_docs),
-        total_files,
-        table,
+    stats = await _index_split_documents(
+        chunks,
+        owner_id,
+        pool,
+        model_name=model_name,
+        batch_size=batch_size,
+        force_reindex=force_reindex,
+        table=table,
+        owner_column=owner_column,
+        source_project_id=source_project_id,
+    )
+    stats["files_scanned"] = len(
+        {d.metadata.get("file_path", d.metadata.get("source", "")) for d in raw_docs}
     )
 
-    for processed_idx, file_path in enumerate(files, start=1):
-        file_chunks = chunks_by_file[file_path]
-        stats["files_processed"] = processed_idx
-
-        # Per-file reconciliation: fetch existing chunk hashes
-        async with pool.acquire() as conn:
-            existing: dict[int, str] = await _fetch_existing_chunks(
-                conn, table, owner_column, owner_id, file_path
-            )
-
-        # Determine which chunks need (re-)embedding
-        pending = []
-        for chunk_doc in file_chunks:
-            idx = chunk_doc.metadata["chunk_index"]
-            existing_hash = existing.get(idx)
-            if existing_hash == chunk_doc.metadata["content_hash"] and not force_reindex:
-                stats["chunks_skipped"] += 1
-            else:
-                pending.append(chunk_doc)
-
-        # Embed and upsert pending chunks in batches
-        if pending:
-            for batch_start in range(0, len(pending), batch_size):
-                batch = pending[batch_start : batch_start + batch_size]
-                texts = [doc.page_content for doc in batch]
-                embeddings: np.ndarray = embedder.embed_batch(texts)
-                async with pool.acquire() as conn:
-                    for chunk_doc, embedding in zip(batch, embeddings):
-                        await _upsert_text_chunk(
-                            conn,
-                            table,
-                            owner_column,
-                            owner_id,
-                            chunk_doc,
-                            embedding,
-                            model_name,
-                            source_project_id=source_project_id,
-                        )
-                stats["chunks_indexed"] += len(batch)
-            stats["files_indexed"] += 1
-
-        # Always clean up orphaned high-index chunks
-        new_chunk_count = len(file_chunks)
-        async with pool.acquire() as conn:
-            deleted = await _delete_stale_chunks(
-                conn, table, owner_column, owner_id, file_path, new_chunk_count
-            )
-        stats["chunks_deleted"] += deleted
-
-        if progress_cb and (
-            processed_idx % progress_interval == 0 or processed_idx == total_files
-        ):
-            await progress_cb(dict(stats), file_path, processed_idx, total_files)
+    logger.info(
+        "Indexing %d documents into %s",
+        len(raw_docs),
+        table,
+    )
+    if progress_cb:
+        total_files = max(stats["files_scanned"], 0)
+        await progress_cb(dict(stats), "", total_files, total_files)
 
     logger.info(
         "Text indexing complete: %d indexed, %d skipped, %d deleted",
@@ -345,6 +442,14 @@ async def ingest_text_direct(
     project_id: str,
     pool: asyncpg.Pool,
     model_name: str = DEFAULT_MODEL,
+    source_id: str | None = None,
+    source_type: str = "api_direct",
+    chunk_type: str | None = None,
+    header_context: str | None = None,
+    table: str = "text_chunks",
+    owner_column: str = "project_id",
+    owner_id: str | None = None,
+    source_project_id: str | None = None,
 ) -> int:
     """Ingest raw text content directly into text_chunks without a TaskQueue job.
 
@@ -362,34 +467,42 @@ async def ingest_text_direct(
     Returns:
         Number of chunks stored.
     """
-    embedder = TextEmbedder(model_name=model_name)
-    doc = load_raw_text(content, source_label)
+    doc = load_raw_text(
+        content,
+        source_label,
+        metadata={
+            "source_type": source_type,
+            **({"chunk_type": chunk_type} if chunk_type else {}),
+            **({"header_context": header_context} if header_context else {}),
+        },
+    )
     chunks = split_documents([doc])
 
     if not chunks:
         return 0
 
-    texts = [c.page_content for c in chunks]
-    embeddings: np.ndarray = embedder.embed_batch(texts)
+    resolved_owner_id = owner_id or project_id
+    resolved_source_project_id = source_project_id
+    if table == "global_text_chunks" and resolved_source_project_id is None:
+        resolved_source_project_id = project_id
 
-    async with pool.acquire() as conn:
-        for chunk_doc, embedding in zip(chunks, embeddings):
-            await _upsert_text_chunk(
-                conn,
-                "text_chunks",
-                "project_id",
-                project_id,
-                chunk_doc,
-                embedding,
-                model_name,
-            )
-
-    # Invalidate BM25 cache for this project (imported lazily to avoid circular)
-    try:
-        from memory.retrieval import invalidate_bm25_cache  # noqa: PLC0415
-        invalidate_bm25_cache(project_id)
-    except ImportError:
-        pass  # retrieval module not yet available (Phase 4)
-
-    logger.info("Ingested %d chunks for source_label=%r, project_id=%s", len(chunks), source_label, project_id)
-    return len(chunks)
+    stats = await _index_split_documents(
+        chunks,
+        resolved_owner_id,
+        pool,
+        model_name=model_name,
+        batch_size=DEFAULT_BATCH_SIZE,
+        force_reindex=True,
+        table=table,
+        owner_column=owner_column,
+        source_project_id=resolved_source_project_id,
+        source_id=source_id,
+    )
+    logger.info(
+        "Ingested %d chunks for source_label=%r table=%s owner=%s",
+        len(chunks),
+        source_label,
+        table,
+        resolved_owner_id,
+    )
+    return stats["chunks_indexed"] + stats["chunks_skipped"]

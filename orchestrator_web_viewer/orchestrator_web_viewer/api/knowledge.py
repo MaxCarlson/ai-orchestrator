@@ -24,6 +24,7 @@ POSTGRES_PORT = int(_env("KO_WEB_POSTGRES_PORT", _env("POSTGRES_PORT", "5432")))
 POSTGRES_USER = _env("KO_WEB_POSTGRES_USER", _env("POSTGRES_USER", "km_user"))
 POSTGRES_PASSWORD = _env("KO_WEB_POSTGRES_PASSWORD", _env("POSTGRES_PASSWORD", ""))
 POSTGRES_DB = _env("KO_WEB_POSTGRES_DB", _env("POSTGRES_DB", "knowledge_manager"))
+GLOBAL_RAG_PROJECT_ID = "00000000-0000-0000-0000-000000000000"
 
 
 async def get_db_connection():
@@ -54,9 +55,11 @@ async def get_projects():
                 MAX(CASE WHEN t.status = 'done' THEN t.modified_at END) AS latest_task_completed
             FROM projects p
             LEFT JOIN tasks t ON t.project_id = p.id
+            WHERE p.id <> $1
             GROUP BY p.id
             ORDER BY p.name
-            """
+            """,
+            GLOBAL_RAG_PROJECT_ID,
         )
         return [dict(row) for row in rows]
     finally:

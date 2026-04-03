@@ -8,22 +8,22 @@ A distributed system for orchestrating AI agents, managing tasks, and coordinati
 
 ```bash
 # Build + start everything with one command
-./build_all.sh
+./build/build_all.sh
 
-# Start orchestrator
+# Build + start everything with helper script
+./build/start.sh
+
+# Start all dockerized services
 cd ~/projects/ai-orchestrator && docker compose up -d
 
 # Watch logs
 docker compose logs -f orchestrator
 
 # Stop everything
-./stop.sh
-
-# Start everything (build + up)
-./start.sh
+./build/stop.sh
 
 # Rebuild everything (stop + start)
-./rebuild.sh
+./build/rebuild.sh
 
 # Check status
 docker compose ps
@@ -45,11 +45,18 @@ docker compose up -d koweb
 export KO_WEB_LMS_BRIDGE_URL=http://localhost:5080
 
 # Show Docker info
-./info.sh
+./build/info.sh
 ```
 
+`./build/build_all.sh` builds and starts the full Docker stack defined in
+[`docker-compose.yml`](docker-compose.yml): `postgres`, `orchestrator`, and
+`koweb`.
+
+`docker compose up -d` also starts the full stack from `docker-compose.yml`
+unless you name a specific service.
+
 **End-to-End Usage:**
-1. Start orchestrator: `cd ~/projects/ai-orchestrator && docker compose up -d`
+1. Start services: `cd ~/projects/ai-orchestrator && docker compose up -d`
 2. Open kmtui: `kmtui` (in another terminal)
 3. Select a task and press `Ctrl+A` to assign to AI
 4. Watch orchestrator logs: `docker compose logs -f orchestrator`
@@ -85,7 +92,7 @@ export KO_WEB_LMS_BRIDGE_URL=http://localhost:5080
 │  └──────────────────────┬──────────────────────────────┘         │
 │                         │                                         │
 │  ┌──────────────────────▼──────────────────────────────┐         │
-│  │  RTX 5090 LLMs (llama.cpp on Port 8080)             │         │
+│  │  RTX 5090 LLMs / LM Studio (default Port 1234)      │         │
 │  │  - Qwen models                                       │         │
 │  │  - Local inference                                   │         │
 │  └──────────────────────────────────────────────────────┘         │
@@ -186,8 +193,8 @@ UI refreshes, orchestrator logs completion
 cd ~/projects/ai-orchestrator
 
 # 2. Create environment file
-cp docker/.env.example docker/.env
-nano docker/.env  # Set POSTGRES_PASSWORD
+cp docker/.env.example .env
+nano .env  # Set POSTGRES_PASSWORD
 
 # 3. Create Docker volume for PostgreSQL data (if not exists)
 docker volume create docker_postgres_data
@@ -205,16 +212,16 @@ export KM_POSTGRES_PASSWORD=<your_password>
 docker compose up -d
 
 # 6. Verify everything works
-docker compose ps  # Should show postgres and orchestrator as "running"
+docker compose ps  # Should show postgres, orchestrator, and koweb as running
 curl http://localhost:8000/health  # Should return {"status":"healthy"}
 ```
 
 ## Daily Operations
 
-### Starting the Orchestrator
+### Starting the Stack
 
 ```bash
-# Start all services (PostgreSQL + Orchestrator)
+# Start all dockerized services (PostgreSQL + Orchestrator + koweb)
 cd ~/projects/ai-orchestrator
 docker compose up -d
 
@@ -226,7 +233,9 @@ docker compose up -d orchestrator
 - PostgreSQL starts and waits for connections
 - Orchestrator waits for PostgreSQL health check to pass
 - Orchestrator connects to database and starts polling task queue
+- koweb starts and connects to the orchestrator API
 - API becomes available at http://localhost:8000
+- Web UI becomes available at http://localhost:3001
 
 ### Watching the Orchestrator
 
@@ -285,7 +294,7 @@ docker compose logs -f orchestrator
 
 ### Using the System (End-to-End Workflow)
 
-**Step 1: Start the orchestrator**
+**Step 1: Start the stack**
 ```bash
 cd ~/projects/ai-orchestrator
 docker compose up -d

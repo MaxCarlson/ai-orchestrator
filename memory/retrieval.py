@@ -17,6 +17,8 @@ from typing import Any, Awaitable, Callable
 import asyncpg
 import numpy as np
 
+from memory.pgvector_utils import to_pgvector_literal
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,20 +31,28 @@ _bm25_cache: dict[tuple[str, str, str], tuple[float, Any, list[dict]]] = {}
 BM25_CACHE_TTL_SECS: float = 300.0
 
 
-def invalidate_bm25_cache(owner_id: str) -> None:
-    """Remove all BM25 cache entries for the given owner_id.
+def invalidate_bm25_cache(table: str | None = None, owner_column: str | None = None, owner_id: str | None = None) -> None:
+    """Remove BM25 cache entries for a specific scope or owner.
 
-    Call after any write to text_chunks for a project to ensure the
-    next search rebuilds the BM25 index with fresh data.
-
-    Args:
-        owner_id: Project UUID or source_key whose cache entries to drop.
+    If ``table`` and ``owner_column`` are omitted, all entries matching
+    ``owner_id`` are removed for backward compatibility.
     """
-    keys_to_delete = [k for k in _bm25_cache if k[2] == owner_id]
+    if owner_id is None:
+        return
+    if table and owner_column:
+        keys_to_delete = [(table, owner_column, owner_id)] if (table, owner_column, owner_id) in _bm25_cache else []
+    else:
+        keys_to_delete = [k for k in _bm25_cache if k[2] == owner_id]
     for key in keys_to_delete:
         del _bm25_cache[key]
     if keys_to_delete:
-        logger.debug("Invalidated %d BM25 cache entries for owner_id=%s", len(keys_to_delete), owner_id)
+        logger.debug(
+            "Invalidated %d BM25 cache entries for table=%s owner_column=%s owner_id=%s",
+            len(keys_to_delete),
+            table,
+            owner_column,
+            owner_id,
+        )
 
 
 async def _load_bm25(
@@ -80,7 +90,7 @@ async def _load_bm25(
 
     records = await conn.fetch(
         f"""
-        SELECT id, content
+        SELECT id, file_path, chunk_index, chunk_type, header_context, content, source_type, source_id
         FROM {table}
         WHERE {owner_column} = $1 AND embedding_status = 'ready'
         """,
@@ -129,13 +139,14 @@ async def dense_search(
             header_context,
             content,
             source_type,
+            source_id,
             1 - (embedding <=> $1) AS similarity
         FROM {table}
         WHERE {owner_column} = $2 AND embedding_status = 'ready'
         ORDER BY embedding <=> $1
         LIMIT $3
         """,
-        np.asarray(query_embedding, dtype=np.float32),
+        to_pgvector_literal(query_embedding),
         owner_id,
         top_k,
     )

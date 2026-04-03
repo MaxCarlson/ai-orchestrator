@@ -64,6 +64,7 @@ import asyncpg
 import numpy as np
 
 from . import models
+from .pgvector_utils import to_pgvector_literal
 from .vector_store import PgVectorStore, VectorStore
 
 
@@ -101,10 +102,13 @@ async def initialize_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(models.CREATE_GLOBAL_CODE_CHUNKS_INDEXES)
     await conn.execute(models.CREATE_EMBEDDING_MODELS_TABLE)
     await conn.execute(models.SEED_EMBEDDING_MODELS)
+    await conn.execute(models.CREATE_PROJECT_TEXT_SOURCES_TABLE)
     await conn.execute(models.CREATE_TEXT_CHUNKS_TABLE)
     await conn.execute(models.CREATE_GLOBAL_TEXT_CHUNKS_TABLE)
+    await conn.execute(models.ALTER_TEXT_CHUNKS_SOURCE_LINKS)
     await conn.execute(models.CREATE_TEXT_CHUNKS_INDEXES)
     await conn.execute(models.CREATE_GLOBAL_TEXT_CHUNKS_INDEXES)
+    await conn.execute(models.CREATE_PROJECT_TEXT_SOURCES_INDEXES)
 
 
 class MemoryManager:
@@ -155,7 +159,7 @@ class MemoryManager:
         """
         # Ensure embedding is float32; asyncpg automatically casts a
         # Python list to the pgvector ``vector`` type.
-        emb = np.asarray(embedding, dtype=np.float32)
+        emb = to_pgvector_literal(embedding)
         async with conn.transaction():
             # Insert memory item and retrieve its ID
             record = await conn.fetchrow(

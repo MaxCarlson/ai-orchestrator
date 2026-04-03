@@ -144,18 +144,19 @@ def split_documents(
 
         # Route to appropriate splitter
         is_markdown = ext in {"md", "markdown"} or source_type == "markdown"
+        explicit_chunk_type = doc.metadata.get("chunk_type")
         if is_markdown:
             doc_chunks = _split_markdown(doc, chunk_size, chunk_overlap)
-            chunk_type = "markdown_section"
+            chunk_type = explicit_chunk_type or "markdown_section"
         elif source_type == "pdf":
             doc_chunks = text_splitter.split_documents([doc])
-            chunk_type = "pdf_page"
+            chunk_type = explicit_chunk_type or "pdf_page"
         elif source_type == "api_direct":
             doc_chunks = text_splitter.split_documents([doc])
-            chunk_type = "text"
+            chunk_type = explicit_chunk_type or "text"
         else:
             doc_chunks = text_splitter.split_documents([doc])
-            chunk_type = "text"
+            chunk_type = explicit_chunk_type or "text"
 
         # Assign chunk index and enrich metadata
         if source not in file_chunk_counts:
@@ -177,7 +178,7 @@ def split_documents(
                     "chunk_index": idx,
                     "file_path": source,
                     "filename": filename,
-                    "header_context": chunk.metadata.get("header_context", ""),
+                    "header_context": chunk.metadata.get("header_context", doc.metadata.get("header_context", "")),
                     "content_hash": content_hash,
                 }
             )

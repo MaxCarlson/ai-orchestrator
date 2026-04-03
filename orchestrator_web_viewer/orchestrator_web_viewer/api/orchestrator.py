@@ -7,12 +7,14 @@ import json
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
+import httpx
 
 router = APIRouter()
 
 # Task queue path from environment
 TASK_QUEUE_PATH = Path(os.getenv("TASK_QUEUE_PATH",
                                   os.path.expanduser("~/projects/ai-orchestrator/task_queue")))
+ORCHESTRATOR_API_URL = os.getenv("KO_WEB_ORCH_URL", os.getenv("ORCHESTRATOR_API_URL", "http://localhost:8000")).rstrip("/")
 
 
 def _read_task_file(filepath: Path) -> Optional[dict]:
@@ -53,6 +55,18 @@ async def get_stats():
     stats["active_workers"] = stats["in_progress"]
 
     return stats
+
+
+@router.get("/health")
+async def get_health():
+    """Proxy orchestrator health."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{ORCHESTRATOR_API_URL}/health")
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Orchestrator health check failed: {exc}") from exc
 
 
 @router.get("/workers")

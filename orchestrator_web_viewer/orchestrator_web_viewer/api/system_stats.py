@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 router = APIRouter()
 _last_cpu_total: float | None = None
 _last_cpu_idle: float | None = None
+GLOBAL_RAG_PROJECT_ID = "00000000-0000-0000-0000-000000000000"
 
 
 def _db_config() -> Dict[str, Any]:
@@ -97,7 +98,7 @@ async def _fetch_db_stats() -> Dict[str, Any]:
 
     try:
         stats = {}
-        stats["projects"] = await conn.fetchval("SELECT COUNT(*) FROM projects")
+        stats["projects"] = await conn.fetchval("SELECT COUNT(*) FROM projects WHERE id <> $1", GLOBAL_RAG_PROJECT_ID)
         stats["tasks"] = await conn.fetchval("SELECT COUNT(*) FROM tasks")
         stats["task_links"] = await _safe_count(conn, "task_links")
         stats["memory_items"] = await _safe_count(conn, "memory_items")
@@ -368,7 +369,8 @@ async def db_trends():
 
     try:
         projects = await conn.fetch(
-            "SELECT id, name FROM projects ORDER BY name"
+            "SELECT id, name FROM projects WHERE id <> $1 ORDER BY name",
+            GLOBAL_RAG_PROJECT_ID,
         )
         tasks = await conn.fetch(
             "SELECT project_id, COUNT(*) AS count FROM tasks GROUP BY project_id"

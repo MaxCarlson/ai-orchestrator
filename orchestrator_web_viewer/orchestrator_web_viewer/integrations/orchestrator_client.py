@@ -24,13 +24,38 @@ async def _request(
     *,
     params: Optional[Dict[str, Any]] = None,
     json: Optional[Dict[str, Any]] = None,
-    timeout: float = 15.0,
+    timeout: float = 60.0,
 ) -> Any:
     """Perform an HTTP request against the orchestrator API and handle errors."""
     url = f"{_base_url()}{path}"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(method, url, params=params, json=json)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or exc.response.reason_phrase
+        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Orchestrator unreachable: {exc}") from exc
+
+    if response.headers.get("content-type", "").startswith("application/json"):
+        return response.json()
+    return {"status": "ok", "detail": response.text}
+
+
+async def _raw_request(
+    method: str,
+    path: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    data: Any = None,
+    files: Any = None,
+    timeout: float = 300.0,
+) -> Any:
+    url = f"{_base_url()}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.request(method, url, params=params, data=data, files=files)
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text or exc.response.reason_phrase
@@ -56,3 +81,8 @@ async def orchestrator_post(path: str, payload: Optional[Dict[str, Any]] = None)
 async def orchestrator_delete(path: str) -> Any:
     """Proxy a DELETE request to the orchestrator."""
     return await _request("DELETE", path)
+
+
+async def orchestrator_multipart_post(path: str, *, data: Dict[str, Any], files: Any) -> Any:
+    """Proxy a multipart POST request to the orchestrator."""
+    return await _raw_request("POST", path, data=data, files=files)

@@ -21,7 +21,7 @@ async function checkServiceAvailability() {
 
     const [dbStatus, orchStatus, lmsStatus] = await Promise.all([
         probe('/api/system/db'),
-        probe('/api/orchestrator/stats'),
+        probe('/api/orchestrator/health'),
         probe('/api/system/lmstudio'),
     ]);
 

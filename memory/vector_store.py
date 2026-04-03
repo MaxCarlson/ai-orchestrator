@@ -15,6 +15,8 @@ from typing import List, Optional, Sequence, Tuple
 import asyncpg
 import numpy as np
 
+from .pgvector_utils import to_pgvector_literal
+
 
 class VectorStore:
     """Abstract interface for a vector store.
@@ -91,5 +93,5 @@ class PgVectorStore(VectorStore):
             ORDER BY embedding <-> $1
             LIMIT {top_k}
         """
-        records = await conn.fetch(query, vector.astype(np.float32))
+        records = await conn.fetch(query, to_pgvector_literal(vector))
         return [(r["memory_id"], r["similarity"]) for r in records]

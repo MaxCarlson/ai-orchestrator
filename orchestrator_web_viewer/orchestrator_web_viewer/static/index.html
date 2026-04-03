@@ -97,18 +97,6 @@
             </div>
 
             <div class="section">
-                <h3>Live Logs</h3>
-                <div class="logs-controls">
-                    <label>
-                        <input type="checkbox" id="auto-scroll" checked>
-                        Auto-scroll
-                    </label>
-                    <button onclick="clearLogs()">Clear</button>
-                </div>
-                <div id="live-logs" class="logs-container"></div>
-            </div>
-
-            <div class="section">
                 <h3>Model & Manual Tasks</h3>
                 <div class="control-grid">
                     <div class="control-card">
@@ -122,8 +110,11 @@
                         <form id="manual-task-form">
                             <label>
                                 Project
-                                <select name="project_id" id="manual-task-project" required></select>
+                                <input type="text" id="manual-task-project-name" placeholder="Type project name" list="manual-task-project-options" autocomplete="off" required>
+                                <input type="hidden" name="project_id" id="manual-task-project">
+                                <datalist id="manual-task-project-options"></datalist>
                             </label>
+                            <p id="manual-task-project-help" class="microcopy"></p>
                             <input type="text" name="title" placeholder="Task Title" required>
                             <textarea name="description" placeholder="Task Description" rows="3" required></textarea>
                             <div class="form-row">
@@ -147,6 +138,18 @@
                         </form>
                     </div>
                 </div>
+            </div>
+
+            <div class="section">
+                <h3>Live Logs</h3>
+                <div class="logs-controls">
+                    <label>
+                        <input type="checkbox" id="auto-scroll" checked>
+                        Auto-scroll
+                    </label>
+                    <button onclick="clearLogs()">Clear</button>
+                </div>
+                <div id="live-logs" class="logs-container"></div>
             </div>
         </div>
 
@@ -212,6 +215,56 @@
                     </div>
                     <p id="tracking-config-status" class="microcopy"></p>
                 </form>
+            </div>
+
+            <div class="section">
+                <h3>Knowledge Sources</h3>
+                <div class="control-card">
+                    <div class="form-row">
+                        <label>
+                            Scope
+                            <select id="knowledge-source-scope">
+                                <option value="project" selected>Selected Project</option>
+                                <option value="global">Global</option>
+                            </select>
+                        </label>
+                        <div class="microcopy" id="knowledge-source-scope-status">Select a project or switch to Global.</div>
+                    </div>
+                    <form id="knowledge-source-upload-form">
+                        <input type="file" id="knowledge-source-files" multiple accept=".txt,.md,.rst,.markdown,.pdf,.json,.ndjson">
+                        <div class="form-row">
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="knowledge-source-replace">
+                                Replace same source
+                            </label>
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="knowledge-source-dedupe">
+                                Dedupe by hash
+                            </label>
+                        </div>
+                        <div class="form-row">
+                            <input type="text" id="knowledge-source-conversation-format" placeholder="Conversation format (optional)">
+                            <button type="submit">Upload Knowledge Source</button>
+                        </div>
+                        <p id="knowledge-source-upload-status" class="microcopy"></p>
+                    </form>
+                    <div class="form-row">
+                        <input type="search" id="knowledge-source-search-query" placeholder="Search current knowledge scope">
+                        <input type="number" id="knowledge-source-search-topk" min="1" max="25" value="8">
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="knowledge-source-search-reranker" checked>
+                            Use reranker
+                        </label>
+                        <button type="button" id="knowledge-source-search-btn">Search</button>
+                    </div>
+                    <p id="knowledge-source-search-status" class="microcopy"></p>
+                    <div id="knowledge-sources-list" class="memory-list">
+                        <div class="empty-state">No knowledge sources loaded.</div>
+                    </div>
+                    <div id="knowledge-source-search-results" class="memory-list">
+                        <div class="empty-state">No search results yet.</div>
+                    </div>
+                </div>
             </div>
 
             <div class="tasks-layout">
@@ -412,6 +465,49 @@
                         <button type="submit">Queue Index</button>
                         <p id="memory-index-status" class="microcopy"></p>
                     </form>
+                </div>
+                <div class="control-card">
+                    <h3>Project Documents</h3>
+                    <form id="project-source-upload-form">
+                        <p class="microcopy">Uses the selected project. Supports text, markdown, PDF, JSON, and NDJSON conversation exports.</p>
+                        <input type="file" id="project-source-files" multiple accept=".txt,.md,.rst,.markdown,.pdf,.json,.ndjson">
+                        <div class="form-row">
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="project-source-replace">
+                                Replace same source
+                            </label>
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="project-source-dedupe">
+                                Dedupe by hash
+                            </label>
+                        </div>
+                        <div class="form-row">
+                            <input type="text" id="project-source-conversation-format" placeholder="Conversation format (optional)">
+                            <button type="submit">Upload To Project</button>
+                        </div>
+                        <p id="project-source-upload-status" class="microcopy"></p>
+                    </form>
+                    <div id="project-sources-list" class="memory-list">
+                        <div class="empty-state">Select a project to manage sources.</div>
+                    </div>
+                </div>
+                <div class="control-card">
+                    <h3>Project Text Search</h3>
+                    <form id="project-text-search-form">
+                        <input type="search" id="project-text-search-query" placeholder="Search selected project text">
+                        <div class="form-row">
+                            <input type="number" id="project-text-search-topk" min="1" max="25" value="8">
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="project-text-search-reranker" checked>
+                                Use reranker
+                            </label>
+                        </div>
+                        <button type="submit">Search Project Text</button>
+                        <p id="project-text-search-status" class="microcopy"></p>
+                    </form>
+                    <div id="project-text-search-results" class="memory-list">
+                        <div class="empty-state">No project text results yet.</div>
+                    </div>
                 </div>
             </div>
 

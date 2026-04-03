@@ -19,6 +19,7 @@ import numpy as np
 from memory.code_chunking import CodeChunk, chunk_file_with_stats
 from memory.code_embeddings import CodeEmbedder
 from memory.manager import initialize_schema
+from memory.pgvector_utils import to_pgvector_literal
 
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ async def _upsert_chunk(
         chunk.end_line,
         chunk.content,
         chunk.content_hash,
-        embedding,
+        to_pgvector_literal(embedding),
         model_name,
         chunk.language,
         "ready",

@@ -1,14 +1,16 @@
 """Web viewer endpoints that proxy memory operations to the orchestrator."""
 from __future__ import annotations
 
+from typing import Any
 from typing import List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from orchestrator_web_viewer.integrations.orchestrator_client import (
     orchestrator_delete,
     orchestrator_get,
+    orchestrator_multipart_post,
     orchestrator_post,
 )
 
@@ -219,3 +221,82 @@ async def list_text_chunks(
     if file_path:
         params["file_path"] = file_path
     return await orchestrator_get(f"/memory/text-chunks/{project_id}", params=params)
+
+
+@router.post("/upload-files/{project_id}")
+async def upload_files(
+    project_id: str,
+    files: list[UploadFile] = File(...),
+    replace_existing: bool = Form(False),
+    dedupe_by_hash: bool = Form(False),
+    reindex_if_same_name: bool = Form(False),
+    conversation_format: str | None = Form(None),
+):
+    """Proxy multipart file upload into a project."""
+    form_files: list[tuple[str, tuple[str, bytes, str]]] = []
+    for upload in files:
+        form_files.append(
+            (
+                "files",
+                (
+                    upload.filename or "upload",
+                    await upload.read(),
+                    upload.content_type or "application/octet-stream",
+                ),
+            )
+        )
+    data: dict[str, Any] = {
+        "replace_existing": str(replace_existing).lower(),
+        "dedupe_by_hash": str(dedupe_by_hash).lower(),
+        "reindex_if_same_name": str(reindex_if_same_name).lower(),
+    }
+    if conversation_format:
+        data["conversation_format"] = conversation_format
+    return await orchestrator_multipart_post(
+        f"/memory/upload-files/{project_id}",
+        data=data,
+        files=form_files,
+    )
+
+
+@router.get("/sources/{project_id}")
+async def project_sources(project_id: str):
+    """List project text sources."""
+    return await orchestrator_get(f"/memory/sources/{project_id}")
+
+
+@router.delete("/sources/{project_id}/{source_id}")
+async def delete_source(project_id: str, source_id: str):
+    """Delete a project text source."""
+    return await orchestrator_delete(f"/memory/sources/{project_id}/{source_id}")
+
+
+@router.post("/sources/{project_id}/{source_id}/reingest")
+async def reingest_source(project_id: str, source_id: str):
+    """Reingest a project text source."""
+    return await orchestrator_post(f"/memory/sources/{project_id}/{source_id}/reingest", {})
+
+
+@router.post("/sources/{project_id}/{source_id}/replace")
+async def replace_source(
+    project_id: str,
+    source_id: str,
+    file: UploadFile = File(...),
+    conversation_format: str | None = Form(None),
+):
+    """Replace a project text source."""
+    data = {}
+    if conversation_format:
+        data["conversation_format"] = conversation_format
+    return await orchestrator_multipart_post(
+        f"/memory/sources/{project_id}/{source_id}/replace",
+        data=data,
+        files=[(
+            "file",
+            (
+                file.filename or "replacement",
+                await file.read(),
+                file.content_type or "application/octet-stream",
+            ),
+        )],
+    )

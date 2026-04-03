@@ -551,27 +551,36 @@ function refreshTaskProjectOptions() {
 }
 
 function refreshManualTaskOptions() {
-    const select = document.getElementById('manual-task-project');
-    if (!select) return;
+    const hiddenInput = document.getElementById('manual-task-project');
+    const nameInput = document.getElementById('manual-task-project-name');
+    const datalist = document.getElementById('manual-task-project-options');
+    if (!hiddenInput || !nameInput || !datalist) return;
     if (!projectsCache.length) {
-        select.innerHTML = '<option value="">No projects found</option>';
+        datalist.innerHTML = '';
+        nameInput.value = '';
+        hiddenInput.value = '';
         return;
     }
     const ordered = [...projectsCache].sort((a, b) => {
         return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
     });
-    select.innerHTML = ordered
-        .map(project => `<option value="${project.id}" ${project.id === selectedProject ? 'selected' : ''}>${project.name}</option>`)
+    datalist.innerHTML = ordered
+        .map(project => `<option value="${project.name}" data-project-id="${project.id}"></option>`)
         .join('');
+    const selected = ordered.find(project => project.id === selectedProject) || ordered[0];
+    if (selected) {
+        hiddenInput.value = selected.id;
+        nameInput.value = selected.name;
+    }
 
-    const datalist = document.getElementById('manual-task-paths');
-    if (!datalist) return;
+    const pathsDatalist = document.getElementById('manual-task-paths');
+    if (!pathsDatalist) return;
     const paths = new Set();
     Object.values(projectTracking || {}).forEach((entry) => {
         (entry.repo_paths || []).forEach((path) => paths.add(path));
         if (entry.repo_path) paths.add(entry.repo_path);
     });
-    datalist.innerHTML = Array.from(paths)
+    pathsDatalist.innerHTML = Array.from(paths)
         .map((path) => `<option value="${path}"></option>`)
         .join('');
 }
@@ -1321,4 +1330,3 @@ async function createNewProject() {
         alert('Failed to create project: ' + error.message);
     }
 }
-

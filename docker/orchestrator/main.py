@@ -7,11 +7,12 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator, List, Optional, Literal
 
 import asyncpg
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
@@ -20,6 +21,16 @@ from memory.code_search import search_code
 from memory.manager import MemoryManager, initialize_schema
 from memory.model_registry import register_model
 from memory.retrieval import hybrid_search, invalidate_bm25_cache
+from memory.source_ingestion import (
+    GLOBAL_RAG_PROJECT_ID,
+    delete_project_source,
+    ingest_bytes_as_source,
+    ingest_uploaded_files,
+    is_global_scope,
+    list_project_sources,
+    reingest_project_source,
+    replace_project_source,
+)
 from memory.text_embeddings import TextEmbedder
 
 
@@ -71,29 +82,51 @@ _reranker: "CrossEncoder | None" = None
 
 AVAILABLE_MODELS = [
     {
+        "id": "qwen2.5-coder-32b-instruct-q5km",
+        "label": "Qwen2.5-Coder-32B-Instruct GGUF (Q5_K_M)",
+        "provider": "local-llm",
+        "endpoint": "lmstudio",
+        "capabilities": ["code", "analysis", "agentic"],
+        "runtime": "local",
+        "lmstudio_model": "qwen2.5-coder-32b-instruct",
+        "lmstudio_identifier": "qwen2.5-coder-32b-q5km",
+        "recommended_quant": "Q5_K_M",
+        "gpu": "max",
+        "context_length": 32768,
+    },
+    {
+        "id": "qwen2.5-coder-32b-instruct-q6k",
+        "label": "Qwen2.5-Coder-32B-Instruct GGUF (Q6_K)",
+        "provider": "local-llm",
+        "endpoint": "lmstudio",
+        "capabilities": ["code", "analysis", "agentic"],
+        "runtime": "local",
+        "lmstudio_model": "qwen2.5-coder-32b-instruct",
+        "lmstudio_identifier": "qwen2.5-coder-32b-q6k",
+        "recommended_quant": "Q6_K",
+        "gpu": "max",
+        "context_length": 32768,
+    },
+    {
         "id": "claude-3-5-sonnet",
         "label": "Claude 3.5 Sonnet (Anthropic)",
         "provider": "anthropic",
         "capabilities": ["code", "analysis"],
+        "runtime": "api",
     },
     {
         "id": "claude-3-opus",
         "label": "Claude 3 Opus (Anthropic)",
         "provider": "anthropic",
         "capabilities": ["analysis"],
+        "runtime": "api",
     },
     {
         "id": "gpt-4.1-mini",
         "label": "GPT-4.1 Mini (OpenAI)",
         "provider": "openai",
         "capabilities": ["general"],
-    },
-    {
-        "id": "qwen2.5-coder-32b",
-        "label": "Qwen2.5 Coder 32B (RTX 5090)",
-        "provider": "local-llm",
-        "endpoint": "llama.cpp",
-        "capabilities": ["code"],
+        "runtime": "api",
     },
     {
         "id": "lmstudio-local",
@@ -101,6 +134,7 @@ AVAILABLE_MODELS = [
         "provider": "local-llm",
         "endpoint": "lmstudio",
         "capabilities": ["chat", "code"],
+        "runtime": "local",
     },
 ]
 
@@ -116,6 +150,7 @@ TRACKING_STATUSES = {
 CODE_CONTEXT_MAX_CHARS = 8000
 CODE_CONTEXT_SNIPPET_CHARS = 1200
 GLOBAL_TASK_PROJECT_ID = "00000000-0000-0000-0000-000000000000"
+GLOBAL_RAG_PROJECT_NAME = "__global_rag__"
 
 
 def _worker_db_target(cli_preference: str) -> tuple[str, int]:
@@ -223,6 +258,20 @@ async def ensure_project_tracking_schema(conn: asyncpg.Connection) -> None:
     )
 
 
+async def ensure_global_rag_project(conn: asyncpg.Connection) -> None:
+    """Ensure the reserved hidden project used for global RAG uploads exists."""
+    await conn.execute(
+        """
+        INSERT INTO projects (id, name, status)
+        VALUES ($1, $2, 'active')
+        ON CONFLICT (id) DO UPDATE
+        SET name = EXCLUDED.name
+        """,
+        GLOBAL_RAG_PROJECT_ID,
+        GLOBAL_RAG_PROJECT_NAME,
+    )
+
+
 async def get_orchestrator_setting(
     conn: asyncpg.Connection,
     key: str,
@@ -283,6 +332,7 @@ async def bootstrap_memory_and_settings() -> None:
         await initialize_schema(conn)
         await ensure_settings_schema(conn)
         await ensure_project_tracking_schema(conn)
+        await ensure_global_rag_project(conn)
         # Ensure a default model record exists
         current_model = await get_orchestrator_setting(conn, "current_model")
         if not current_model:
@@ -688,7 +738,6 @@ async def listen_for_task_updates():
 
 # Task Queue integration
 import sys
-from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from shared.task_queue import TaskPriority, TaskQueue, TaskStatus
 import subprocess
@@ -955,6 +1004,11 @@ class TextChunkResponse(BaseModel):
     header_context: str
     content: str
     source_type: str
+    source_id: str | None = None
+    source_label: str | None = None
+    original_filename: str | None = None
+    mime_type: str | None = None
+    ingest_method: str | None = None
     similarity: float | None = None
     rrf_score: float | None = None
     rerank_score: float | None = None
@@ -1159,8 +1213,10 @@ async def list_project_tracking():
                 pt.notes
             FROM projects p
             LEFT JOIN project_tracking pt ON pt.project_id = p.id
+            WHERE p.id <> $1
             ORDER BY p.name
-            """
+            """,
+            GLOBAL_RAG_PROJECT_ID,
         )
     results = []
     for row in rows:
@@ -1979,6 +2035,28 @@ async def text_search_endpoint(project_id: str, req: TextSearchRequest) -> dict:
             use_reranker=req.use_reranker,
             reranker=reranker,
         )
+        if results:
+            source_ids = [row.get("source_id") for row in results if row.get("source_id")]
+            source_map: dict[str, dict] = {}
+            if source_ids:
+                source_rows = await conn.fetch(
+                    """
+                    SELECT id, source_label, original_filename, mime_type, ingest_method
+                    FROM project_text_sources
+                    WHERE id = ANY($1::uuid[])
+                    """,
+                    source_ids,
+                )
+                source_map = {str(row["id"]): dict(row) for row in source_rows}
+            for row in results:
+                source_id = row.get("source_id")
+                if source_id and str(source_id) in source_map:
+                    meta = source_map[str(source_id)]
+                    row["source_id"] = str(source_id)
+                    row["source_label"] = meta["source_label"]
+                    row["original_filename"] = meta["original_filename"]
+                    row["mime_type"] = meta["mime_type"]
+                    row["ingest_method"] = meta["ingest_method"]
     return {"results": results, "count": len(results)}
 
 
@@ -2052,17 +2130,96 @@ async def text_index_endpoint(project_id: str, req: TextIndexRequest) -> dict:
 @app.post("/memory/ingest-text/{project_id}")
 async def ingest_text_endpoint(project_id: str, req: IngestTextRequest) -> dict:
     """Ingest a small text document directly (synchronous)."""
-    from memory.ingest_pipeline import ingest_text_direct
-    text_model = "BAAI/bge-base-en-v1.5"
     pool = await get_db_pool()
-    chunk_count = await ingest_text_direct(
-        content=req.content,
-        source_label=req.source_label,
+    result = await ingest_bytes_as_source(
+        pool,
         project_id=project_id,
-        pool=pool,
-        model_name=text_model,
+        filename=f"{req.source_label}.txt",
+        data=req.content.encode("utf-8"),
+        source_label=req.source_label,
+        ingest_method="api",
     )
-    return {"chunks_indexed": chunk_count, "source_label": req.source_label}
+    return {"chunks_indexed": result.get("chunk_count", 0), "source_label": req.source_label, "source_id": result.get("source_id")}
+
+
+@app.post("/memory/upload-files/{project_id}")
+async def upload_files_endpoint(
+    project_id: str,
+    files: list[UploadFile] = File(...),
+    replace_existing: bool = Form(False),
+    dedupe_by_hash: bool = Form(False),
+    reindex_if_same_name: bool = Form(False),
+    conversation_format: str | None = Form(None),
+) -> dict:
+    """Upload one or more source files into a project."""
+    del reindex_if_same_name
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await ensure_project_exists(conn, project_id)
+    file_payloads: list[tuple[str, bytes, str | None]] = []
+    for upload in files:
+        file_payloads.append((upload.filename or "upload", await upload.read(), upload.content_type))
+    results = await ingest_uploaded_files(
+        pool,
+        project_id=project_id,
+        files=file_payloads,
+        replace_existing=replace_existing,
+        dedupe_by_hash=dedupe_by_hash,
+        conversation_format=conversation_format,
+    )
+    return {"results": results, "count": len(results)}
+
+
+@app.get("/memory/sources/{project_id}")
+async def list_project_sources_endpoint(project_id: str) -> dict:
+    """List source registry entries for a project."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await ensure_project_exists(conn, project_id)
+    rows = await list_project_sources(pool, project_id)
+    return {"sources": rows, "count": len(rows)}
+
+
+@app.delete("/memory/sources/{project_id}/{source_id}")
+async def delete_project_source_endpoint(project_id: str, source_id: str) -> dict:
+    """Delete a project source and all associated chunks."""
+    pool = await get_db_pool()
+    try:
+        return await delete_project_source(pool, project_id, source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/memory/sources/{project_id}/{source_id}/reingest")
+async def reingest_project_source_endpoint(project_id: str, source_id: str) -> dict:
+    """Reingest an existing project source from stored content."""
+    pool = await get_db_pool()
+    try:
+        return await reingest_project_source(pool, project_id=project_id, source_id=source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/memory/sources/{project_id}/{source_id}/replace")
+async def replace_project_source_endpoint(
+    project_id: str,
+    source_id: str,
+    file: UploadFile = File(...),
+    conversation_format: str | None = Form(None),
+) -> dict:
+    """Replace the stored file for an existing source and reindex it."""
+    pool = await get_db_pool()
+    try:
+        return await replace_project_source(
+            pool,
+            project_id=project_id,
+            source_id=source_id,
+            filename=file.filename or "replacement",
+            data=await file.read(),
+            conversation_format=conversation_format,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/memory/text-chunks/{project_id}")
@@ -2078,10 +2235,24 @@ async def list_text_chunks_endpoint(
         if file_path is not None:
             rows = await conn.fetch(
                 """
-                SELECT id, file_path, chunk_index, chunk_type, header_context, content, source_type, created_at
-                FROM text_chunks
-                WHERE project_id = $1 AND file_path = $2
-                ORDER BY file_path, chunk_index
+                SELECT
+                    tc.id,
+                    tc.file_path,
+                    tc.chunk_index,
+                    tc.chunk_type,
+                    tc.header_context,
+                    tc.content,
+                    tc.source_type,
+                    tc.source_id,
+                    pts.source_label,
+                    pts.original_filename,
+                    pts.mime_type,
+                    pts.ingest_method,
+                    tc.created_at
+                FROM text_chunks tc
+                LEFT JOIN project_text_sources pts ON pts.id = tc.source_id
+                WHERE tc.project_id = $1 AND tc.file_path = $2
+                ORDER BY tc.file_path, tc.chunk_index
                 LIMIT $3 OFFSET $4
                 """,
                 project_id,
@@ -2097,10 +2268,24 @@ async def list_text_chunks_endpoint(
         else:
             rows = await conn.fetch(
                 """
-                SELECT id, file_path, chunk_index, chunk_type, header_context, content, source_type, created_at
-                FROM text_chunks
-                WHERE project_id = $1
-                ORDER BY file_path, chunk_index
+                SELECT
+                    tc.id,
+                    tc.file_path,
+                    tc.chunk_index,
+                    tc.chunk_type,
+                    tc.header_context,
+                    tc.content,
+                    tc.source_type,
+                    tc.source_id,
+                    pts.source_label,
+                    pts.original_filename,
+                    pts.mime_type,
+                    pts.ingest_method,
+                    tc.created_at
+                FROM text_chunks tc
+                LEFT JOIN project_text_sources pts ON pts.id = tc.source_id
+                WHERE tc.project_id = $1
+                ORDER BY tc.file_path, tc.chunk_index
                 LIMIT $2 OFFSET $3
                 """,
                 project_id,

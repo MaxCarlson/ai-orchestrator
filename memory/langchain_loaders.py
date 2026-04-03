@@ -122,7 +122,7 @@ def load_all_documents(path: Path, include_pdfs: bool = True) -> list[Document]:
     return docs
 
 
-def load_raw_text(text: str, source_label: str) -> Document:
+def load_raw_text(text: str, source_label: str, metadata: dict | None = None) -> Document:
     """Wrap raw text as a LangChain Document for API-submitted content.
 
     Args:
@@ -132,7 +132,7 @@ def load_raw_text(text: str, source_label: str) -> Document:
     Returns:
         A single Document with source_type 'api_direct'.
     """
-    return Document(
-        page_content=text,
-        metadata={"source": source_label, "source_type": "api_direct"},
-    )
+    merged_metadata = {"source": source_label, "source_type": "api_direct"}
+    if metadata:
+        merged_metadata.update(metadata)
+    return Document(page_content=text, metadata=merged_metadata)

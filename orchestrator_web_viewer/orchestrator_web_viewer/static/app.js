@@ -63,6 +63,7 @@ const EMBEDDING_MODE_DESCRIPTIONS = {
     code: 'Code-only: symbol-aware chunks with AST parsing (CodeBERT).',
     text: 'Text-only: documents and prose (BGE base).',
 };
+const GLOBAL_RAG_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
 
 function logUiEvent(eventType, details = {}) {
     const payload = {
@@ -254,6 +255,18 @@ function setActiveProject(projectId) {
         window.localStorage.removeItem('selectedProjectId');
     }
     renderProjectTrackingBanner();
+    if (typeof loadProjectTextSources === 'function') {
+        loadProjectTextSources();
+    }
+    if (typeof loadKnowledgeSourcesPanel === 'function') {
+        loadKnowledgeSourcesPanel();
+    }
+    if (typeof refreshManualTaskOptions === 'function') {
+        refreshManualTaskOptions();
+    }
+    if (typeof syncManualTaskProjectSelection === 'function') {
+        syncManualTaskProjectSelection();
+    }
 }
 
 // Initialize on page load
@@ -476,6 +489,8 @@ async function loadOrchestrator() {
     if (!projectsCache.length) {
         await loadProjects();
     }
+    refreshManualTaskOptions();
+    syncManualTaskProjectSelection();
 }
 
 function setupModelControls() {
@@ -487,8 +502,19 @@ function setupModelControls() {
 
 function setupManualTaskForm() {
     const form = document.getElementById('manual-task-form');
+    const projectNameInput = document.getElementById('manual-task-project-name');
+    const workingDirInput = document.getElementById('manual-task-working-dir');
     if (form) {
         form.addEventListener('submit', submitManualTask);
+    }
+    if (projectNameInput) {
+        projectNameInput.addEventListener('input', syncManualTaskProjectSelection);
+        projectNameInput.addEventListener('change', syncManualTaskProjectSelection);
+    }
+    if (workingDirInput) {
+        workingDirInput.addEventListener('input', () => {
+            workingDirInput.dataset.autoFilled = 'false';
+        });
     }
 }
 
@@ -499,6 +525,11 @@ function setupMemoryControls() {
     const semanticClearBtn = document.getElementById('memory-semantic-clear');
     const memoryAddForm = document.getElementById('memory-add-form');
     const memoryIndexForm = document.getElementById('memory-index-form');
+    const projectSourceUploadForm = document.getElementById('project-source-upload-form');
+    const projectTextSearchForm = document.getElementById('project-text-search-form');
+    const knowledgeSourceUploadForm = document.getElementById('knowledge-source-upload-form');
+    const knowledgeSourceSearchBtn = document.getElementById('knowledge-source-search-btn');
+    const knowledgeSourceScope = document.getElementById('knowledge-source-scope');
     const semanticStatus = document.getElementById('memory-semantic-status');
     if (refreshBtn) {
         refreshBtn.addEventListener('click', () => {
@@ -544,6 +575,28 @@ function setupMemoryControls() {
     }
     if (memoryIndexForm) {
         memoryIndexForm.addEventListener('submit', handleMemoryIndex);
+    }
+    if (projectSourceUploadForm) {
+        projectSourceUploadForm.addEventListener('submit', handleProjectSourceUpload);
+    }
+    if (projectTextSearchForm) {
+        projectTextSearchForm.addEventListener('submit', handleProjectTextSearch);
+    }
+    if (knowledgeSourceUploadForm) {
+        knowledgeSourceUploadForm.addEventListener('submit', handleKnowledgeSourceUpload);
+    }
+    if (knowledgeSourceSearchBtn) {
+        knowledgeSourceSearchBtn.addEventListener('click', handleKnowledgeSourceSearch);
+    }
+    if (knowledgeSourceScope) {
+        knowledgeSourceScope.addEventListener('change', () => {
+            if (typeof loadKnowledgeSourcesPanel === 'function') {
+                loadKnowledgeSourcesPanel();
+            }
+            if (typeof runKnowledgeSourceSearch === 'function') {
+                runKnowledgeSourceSearch(false);
+            }
+        });
     }
 }
 
@@ -731,6 +784,7 @@ function initializeLogViewerControls() {
 
 async function loadModelControls() {
     const select = document.getElementById('model-select');
+    const status = document.getElementById('model-status');
     if (!select) return;
     try {
         const config = await fetch('/api/control/models').then(r => r.json());
@@ -741,12 +795,21 @@ async function loadModelControls() {
         if (config.current_model) {
             select.value = config.current_model;
         }
+        const activeModel = availableModels.find((model) => model.id === select.value);
+        if (status && activeModel) {
+            status.textContent = activeModel.runtime === 'local'
+                ? `Selected local model: ${activeModel.label}`
+                : `Selected API model: ${activeModel.label}`;
+        }
         populateTrackingModelSelect(
             document.getElementById('tracking-preferred-model'),
             undefined
         );
     } catch (error) {
         console.error('Error loading models:', error);
+        if (status) {
+            status.textContent = 'Failed to load models';
+        }
     }
 }
 
@@ -757,19 +820,90 @@ async function saveModelSelection() {
 
     logUiEvent('model_select', { model_id: select.value });
     try {
-        await fetch('/api/control/models/select', {
+        if (status) {
+            status.textContent = 'Saving model selection...';
+        }
+        const response = await fetch('/api/control/models/select', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model_id: select.value })
         });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(normalizeErrorDetail(payload) || 'Failed to update model');
+        }
+        const selectedModel = availableModels.find((model) => model.id === select.value);
+        if (selectedModel && selectedModel.runtime === 'local' && selectedModel.lmstudio_model) {
+            if (status) {
+                status.textContent = `Loading ${selectedModel.label} into LM Studio...`;
+            }
+            const loadResponse = await fetch('/api/lmstudio/load', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: selectedModel.lmstudio_model,
+                    identifier: selectedModel.lmstudio_identifier || selectedModel.id,
+                    gpu: selectedModel.gpu || 'max',
+                    context_length: selectedModel.context_length || 32768,
+                    yes: true,
+                }),
+            });
+            const loadPayload = await loadResponse.json();
+            if (!loadResponse.ok) {
+                throw new Error(normalizeErrorDetail(loadPayload) || 'LM Studio load failed');
+            }
+            if (status) {
+                status.textContent = `${selectedModel.label} selected and load requested.`;
+            }
+            return;
+        }
         if (status) {
             status.textContent = 'Model updated successfully';
         }
     } catch (error) {
         console.error('Error updating model:', error);
         if (status) {
-            status.textContent = 'Failed to update model';
+            status.textContent = `Failed to update model: ${error.message}`;
         }
+    }
+}
+
+function findProjectByName(name) {
+    const target = (name || '').trim().toLowerCase();
+    if (!target) return null;
+    return projectsCache.find((project) => (project.name || '').trim().toLowerCase() === target) || null;
+}
+
+function syncManualTaskProjectSelection() {
+    const nameInput = document.getElementById('manual-task-project-name');
+    const hiddenInput = document.getElementById('manual-task-project');
+    const workingDirInput = document.getElementById('manual-task-working-dir');
+    const helpEl = document.getElementById('manual-task-project-help');
+    if (!nameInput || !hiddenInput || !workingDirInput) {
+        return;
+    }
+
+    const matchedProject = findProjectByName(nameInput.value);
+    if (!matchedProject) {
+        hiddenInput.value = '';
+        workingDirInput.value = '';
+        if (helpEl) {
+            helpEl.textContent = nameInput.value.trim() ? 'Choose a project from the known project list.' : '';
+        }
+        return;
+    }
+
+    hiddenInput.value = matchedProject.id;
+    const tracking = projectTracking[matchedProject.id] || {};
+    const defaultPath = tracking.repo_path || (tracking.repo_paths || [])[0] || '';
+    if (!workingDirInput.value || workingDirInput.dataset.autoFilled === 'true') {
+        workingDirInput.value = defaultPath;
+        workingDirInput.dataset.autoFilled = defaultPath ? 'true' : 'false';
+    }
+    if (helpEl) {
+        helpEl.textContent = defaultPath
+            ? `Working directory defaulted to ${defaultPath}`
+            : 'This project has no tracked repo path yet.';
     }
 }
 
@@ -777,8 +911,15 @@ async function submitManualTask(event) {
     event.preventDefault();
     const form = event.target;
     const status = document.getElementById('manual-task-status');
+    syncManualTaskProjectSelection();
     const formData = new FormData(form);
     const payload = Object.fromEntries(formData.entries());
+    if (!payload.project_id) {
+        if (status) {
+            status.textContent = 'Select a valid project first.';
+        }
+        return;
+    }
     payload.priority = Number(payload.priority);
     Object.assign(payload, approvalMetadata('webui-manual-task'));
     if (!payload.working_dir) {
@@ -802,6 +943,8 @@ async function submitManualTask(event) {
             throw new Error(result.detail || 'Failed to queue task');
         }
         form.reset();
+        refreshManualTaskOptions();
+        syncManualTaskProjectSelection();
         if (status) {
             status.textContent = `Queued task ${result.task_id}`;
         }
