@@ -39,3 +39,10 @@ prometheus-client==0.19.0
 pytest==8.0.0
 pytest-asyncio==0.23.3
 pytest-cov==4.1.0
+
+# RAG pipeline - text/document loading and splitting
+langchain>=0.2
+langchain-community>=0.2
+langchain-text-splitters>=0.2
+rank-bm25>=0.2.2
+unstructured>=0.14
