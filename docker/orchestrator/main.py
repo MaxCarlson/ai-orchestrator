@@ -18,6 +18,8 @@ from pydantic_settings import BaseSettings
 from memory.code_embeddings import CodeEmbedder
 from memory.code_search import search_code
 from memory.manager import MemoryManager, initialize_schema
+from memory.model_registry import register_model
+from memory.retrieval import hybrid_search, invalidate_bm25_cache
 from memory.text_embeddings import TextEmbedder
 
 
@@ -64,6 +66,7 @@ db_pool: asyncpg.Pool | None = None
 memory_manager = MemoryManager()
 code_embedder: CodeEmbedder | None = None
 text_embedder: TextEmbedder | None = None
+_reranker: "CrossEncoder | None" = None
 
 
 AVAILABLE_MODELS = [
@@ -288,6 +291,10 @@ async def bootstrap_memory_and_settings() -> None:
                 "current_model",
                 {"model_id": AVAILABLE_MODELS[0]["id"]},
             )
+    async with pool.acquire() as conn:
+        await register_model(conn, model_id="BAAI/bge-base-en-v1.5", purpose="text", dimensions=768, framework="sentence-transformers", is_default=True)
+        await register_model(conn, model_id="microsoft/codebert-base", purpose="code", dimensions=768, framework="sentence-transformers", is_default=True)
+        await register_model(conn, model_id="cross-encoder/ms-marco-MiniLM-L-6-v2", purpose="rerank", dimensions=0, framework="sentence-transformers", is_default=True)
 
 
 def get_code_embedder() -> CodeEmbedder:
@@ -304,6 +311,15 @@ def get_text_embedder() -> TextEmbedder:
     if text_embedder is None:
         text_embedder = TextEmbedder()
     return text_embedder
+
+
+def get_reranker() -> "CrossEncoder":
+    """Return the CrossEncoder reranker singleton, loading on first call."""
+    global _reranker
+    if _reranker is None:
+        from sentence_transformers import CrossEncoder
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    return _reranker
 
 
 def _truncate_snippet(text: str, limit: int) -> str:
@@ -909,6 +925,39 @@ class CodeIndexRequest(BaseModel):
     model_id: Optional[str] = None
     approved: bool = False
     approved_by: Optional[str] = None
+
+
+class TextSearchRequest(BaseModel):
+    query: str
+    top_k: int = 10
+    use_reranker: bool = True
+    table: str = "text_chunks"
+
+
+class TextIndexRequest(BaseModel):
+    repo_path: str
+    mode: str = "text"
+    target: str = "project"
+    force_reindex: bool = False
+    include_pdfs: bool = True
+
+
+class IngestTextRequest(BaseModel):
+    content: str
+    source_label: str = "api_direct"
+
+
+class TextChunkResponse(BaseModel):
+    id: int
+    file_path: str
+    chunk_index: int
+    chunk_type: str
+    header_context: str
+    content: str
+    source_type: str
+    similarity: float | None = None
+    rrf_score: float | None = None
+    rerank_score: float | None = None
 
 
 class ManualTaskCreate(BaseModel):
@@ -1911,6 +1960,158 @@ async def code_index_endpoint(project_id: str, payload: CodeIndexRequest):
         context=context,
     )
     return {"status": "queued", "task_id": task_id}
+
+
+@app.post("/memory/text-search/{project_id}")
+async def text_search_endpoint(project_id: str, req: TextSearchRequest) -> dict:
+    """Search text chunks for a project using hybrid retrieval."""
+    embedder = get_text_embedder()
+    query_embedding = embedder.embed_query(req.query)
+    table = req.table if req.table in {"text_chunks", "global_text_chunks"} else "text_chunks"
+    owner_column = "project_id" if table == "text_chunks" else "source_key"
+    reranker = get_reranker() if req.use_reranker else None
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        results = await hybrid_search(
+            conn, table, owner_column, project_id,
+            req.query, query_embedding,
+            top_k=req.top_k,
+            use_reranker=req.use_reranker,
+            reranker=reranker,
+        )
+    return {"results": results, "count": len(results)}
+
+
+@app.post("/memory/text-index/{project_id}")
+async def text_index_endpoint(project_id: str, req: TextIndexRequest) -> dict:
+    """Queue a text indexing job for a project."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await ensure_project_exists(conn, project_id)
+        project = await conn.fetchrow(
+            "SELECT name FROM projects WHERE id = $1",
+            project_id,
+        )
+
+    text_model_id = "BAAI/bge-base-en-v1.5"
+    db_host, db_port = _worker_db_target("local")
+    embeddings_script = Path(settings.host_repo_root) / "memory" / "run_embeddings.py"
+    command = (
+        f"python \"{embeddings_script}\""
+        f" --repo-path \"{req.repo_path}\""
+        f" --project-id {project_id}"
+        f" --mode text"
+        f" --target {req.target}"
+        f" --text-model \"{text_model_id}\""
+        f" --db-host \"{db_host}\""
+        f" --db-port {db_port}"
+        f" --db-name \"{settings.postgres_db}\""
+        f" --db-user \"{settings.postgres_user}\""
+        f" --db-password \"{settings.postgres_password}\""
+    )
+    if req.force_reindex:
+        command += " --force-reindex"
+    if req.include_pdfs:
+        command += " --include-pdfs"
+    else:
+        command += " --no-include-pdfs"
+
+    project_name = project['name'] if project else project_id
+    description = (
+        "Run text document indexing for project.\n"
+        f"Project: {project_name} ({project_id})\n"
+        f"Repo path: {req.repo_path}\n"
+        f"Mode: text\n"
+        f"Target: {req.target}\n"
+        f"Include PDFs: {req.include_pdfs}\n"
+        "Command:\n"
+        f"{command}"
+    )
+    context = {
+        "job_type": "text_index",
+        "repo_path": req.repo_path,
+        "text_model_id": text_model_id,
+        "force_reindex": req.force_reindex,
+        "include_pdfs": req.include_pdfs,
+        "command": command,
+    }
+
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    task_id = task_queue.create_task(
+        project_id=project_id,
+        task_title=f"Text index - {project_name}",
+        description=description,
+        priority=TaskPriority.HIGH,
+        cli_preference="local",
+        working_dir=settings.host_repo_root,
+        context=context,
+    )
+    return {"status": "queued", "task_id": task_id}
+
+
+@app.post("/memory/ingest-text/{project_id}")
+async def ingest_text_endpoint(project_id: str, req: IngestTextRequest) -> dict:
+    """Ingest a small text document directly (synchronous)."""
+    from memory.ingest_pipeline import ingest_text_direct
+    text_model = "BAAI/bge-base-en-v1.5"
+    pool = await get_db_pool()
+    chunk_count = await ingest_text_direct(
+        content=req.content,
+        source_label=req.source_label,
+        project_id=project_id,
+        pool=pool,
+        model_name=text_model,
+    )
+    return {"chunks_indexed": chunk_count, "source_label": req.source_label}
+
+
+@app.get("/memory/text-chunks/{project_id}")
+async def list_text_chunks_endpoint(
+    project_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    file_path: Optional[str] = None,
+) -> dict:
+    """List text chunks for a project with pagination."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        if file_path is not None:
+            rows = await conn.fetch(
+                """
+                SELECT id, file_path, chunk_index, chunk_type, header_context, content, source_type, created_at
+                FROM text_chunks
+                WHERE project_id = $1 AND file_path = $2
+                ORDER BY file_path, chunk_index
+                LIMIT $3 OFFSET $4
+                """,
+                project_id,
+                file_path,
+                limit,
+                offset,
+            )
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM text_chunks WHERE project_id = $1 AND file_path = $2",
+                project_id,
+                file_path,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, file_path, chunk_index, chunk_type, header_context, content, source_type, created_at
+                FROM text_chunks
+                WHERE project_id = $1
+                ORDER BY file_path, chunk_index
+                LIMIT $2 OFFSET $3
+                """,
+                project_id,
+                limit,
+                offset,
+            )
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM text_chunks WHERE project_id = $1",
+                project_id,
+            )
+    return {"chunks": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
 
 
 if __name__ == "__main__":

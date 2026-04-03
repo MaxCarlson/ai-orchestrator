@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-model", type=str, default="BAAI/bge-base-en-v1.5")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--force-reindex", action="store_true")
+    parser.add_argument("--include-pdfs", dest="include_pdfs", action=argparse.BooleanOptionalAction, default=True, help="Include PDF files in text indexing")
     parser.add_argument("--db-host", default="localhost")
     parser.add_argument("--db-port", type=int, default=5432)
     parser.add_argument("--db-name", default="knowledge_manager")
@@ -278,6 +279,7 @@ async def run_embeddings() -> None:
                 source_key=source_key,
                 source_project_id=args.project_id,
                 batch_size=args.batch_size,
+                include_pdfs=args.include_pdfs,
             )
             stats["text"]["summary"] = text_stats
 

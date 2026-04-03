@@ -24,6 +24,13 @@
         </div>
     </header>
 
+    <!-- Service Status Bar -->
+    <div class="service-status-bar">
+        <span class="service-badge" data-service="db">DB</span>
+        <span class="service-badge" data-service="orchestrator">ORCH</span>
+        <span class="service-badge" data-service="lmstudio">LMS</span>
+    </div>
+
     <!-- Main Content -->
     <main class="main-content">
         <!-- Dashboard View -->
@@ -339,6 +346,14 @@
         <div id="memory-view" class="view">
             <h2>Memory Manager</h2>
 
+            <div id="memory-unavailable" class="service-unavailable" style="display:none">
+                <div class="service-unavailable-card">
+                    <h3>Orchestrator Offline</h3>
+                    <p>Memory features require the orchestrator service. Check the System tab for service status.</p>
+                </div>
+            </div>
+
+            <div id="memory-content">
             <div id="memory-stats" class="memory-stats-grid">
                 <div class="stat-card">
                     <h3>Total Memories</h3>
@@ -403,6 +418,7 @@
             <div id="memory-list" class="memory-list">
                 <div class="loading">Loading memory items...</div>
             </div>
+            </div><!-- end #memory-content -->
         </div>
 
         <!-- Embeddings View -->
@@ -782,6 +798,10 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script defer src="/static/services.js"></script>
+    <script defer src="/static/knowledge.js"></script>
+    <script defer src="/static/memory.js"></script>
+    <script defer src="/static/system.js"></script>
+    <script defer src="/static/app.js"></script>
 </body>
 </html>

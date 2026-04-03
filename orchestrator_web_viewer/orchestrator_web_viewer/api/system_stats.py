@@ -102,6 +102,7 @@ async def _fetch_db_stats() -> Dict[str, Any]:
         stats["task_links"] = await _safe_count(conn, "task_links")
         stats["memory_items"] = await _safe_count(conn, "memory_items")
         stats["code_chunks"] = await _safe_count(conn, "code_chunks")
+        stats["text_chunks"] = await _safe_count(conn, "text_chunks")
         stats["project_tracking"] = await _safe_count(conn, "project_tracking")
         stats["db_version"] = await conn.fetchval("SELECT version()")
         stats["db_size_bytes"] = await conn.fetchval("SELECT pg_database_size(current_database())")

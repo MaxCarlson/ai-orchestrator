@@ -1445,3 +1445,63 @@ body::before {
     font-size: 0.85rem;
     margin-top: 0.25rem;
 }
+
+/* Service status bar */
+.service-status-bar {
+    display: flex;
+    gap: 8px;
+    padding: 4px 16px;
+    background: var(--bg-secondary, #1a1a2e);
+    border-bottom: 1px solid var(--border, #333);
+    font-size: 11px;
+}
+
+.service-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: #555;
+    color: #ccc;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+.service-badge.online {
+    background: #1a5c1a;
+    color: #7fff7f;
+}
+
+.service-badge.offline {
+    background: #5c1a1a;
+    color: #ff7f7f;
+}
+
+/* Service unavailable placeholder */
+.service-unavailable {
+    padding: 48px 24px;
+    text-align: center;
+}
+
+.service-unavailable-card {
+    display: inline-block;
+    padding: 24px 32px;
+    background: var(--bg-secondary, #1a1a2e);
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    max-width: 480px;
+}
+
+.service-unavailable-card h3 {
+    margin: 0 0 12px;
+    color: #ff9999;
+}
+
+.service-unavailable-card p {
+    margin: 0;
+    color: #aaa;
+    line-height: 1.5;
+}
+
+/* Nav button service-offline state */
+.nav-btn.service-offline {
+    opacity: 0.55;
+}
