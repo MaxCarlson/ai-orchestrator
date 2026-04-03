@@ -215,6 +215,27 @@ ON global_code_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 """
 
+ALTER_MEMORY_EMBEDDING_DIMENSION = """
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'memory_items'
+          AND column_name = 'embedding'
+          AND udt_name = 'vector'
+    ) THEN
+        BEGIN
+            EXECUTE 'ALTER TABLE memory_items ALTER COLUMN embedding TYPE vector(768)';
+        EXCEPTION
+            WHEN others THEN
+                -- Ignore errors if column already has dimension or table absent.
+                NULL;
+        END;
+    END IF;
+END $$;
+"""
+
 CREATE_EMBEDDING_MODELS_TABLE = """
 CREATE TABLE IF NOT EXISTS embedding_models (
     id TEXT PRIMARY KEY,
@@ -305,25 +326,4 @@ ON global_text_chunks (content_hash);
 CREATE INDEX IF NOT EXISTS idx_global_text_chunks_embedding
 ON global_text_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
-"""
-
-ALTER_MEMORY_EMBEDDING_DIMENSION = """
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'memory_items'
-          AND column_name = 'embedding'
-          AND udt_name = 'vector'
-    ) THEN
-        BEGIN
-            EXECUTE 'ALTER TABLE memory_items ALTER COLUMN embedding TYPE vector(768)';
-        EXCEPTION
-            WHEN others THEN
-                -- Ignore errors if column already has dimension or table absent.
-                NULL;
-        END;
-    END IF;
-END $$;
 """
