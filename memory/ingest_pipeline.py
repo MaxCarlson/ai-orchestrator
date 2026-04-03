@@ -18,7 +18,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable
 
 import asyncpg
 import numpy as np
@@ -40,7 +40,7 @@ async def _fetch_existing_chunks(
     owner_column: str,
     owner_id: str,
     file_path: str,
-) -> Dict[int, str]:
+) -> dict[int, str]:
     """Fetch existing (chunk_index, content_hash) pairs for a file.
 
     Args:
@@ -213,7 +213,7 @@ async def index_text_documents(
     owner_column: str = "project_id",
     source_project_id: str | None = None,
     include_pdfs: bool = True,
-    progress_cb: Optional[Callable[[dict, str, int, int], Awaitable[None]]] = None,
+    progress_cb: Callable[[dict, str, int, int], Awaitable[None]] | None = None,
     progress_interval: int = 20,
 ) -> dict:
     """Index text documents from a directory into text_chunks.
@@ -249,7 +249,7 @@ async def index_text_documents(
     chunks = split_documents(raw_docs)
 
     # Group chunks by source file for per-file reconciliation
-    chunks_by_file: Dict[str, list] = defaultdict(list)
+    chunks_by_file: dict[str, list] = defaultdict(list)
     for chunk in chunks:
         source = chunk.metadata.get("file_path", chunk.metadata.get("source", ""))
         chunks_by_file[source].append(chunk)
@@ -257,8 +257,11 @@ async def index_text_documents(
     files = list(chunks_by_file.keys())
     total_files = len(files)
 
-    stats: Dict[str, Any] = {
-        "files_scanned": len(raw_docs),
+    stats: dict[str, Any] = {
+        "files_scanned": len({
+            d.metadata.get("file_path", d.metadata.get("source", ""))
+            for d in raw_docs
+        }),
         "files_processed": 0,
         "files_indexed": 0,
         "chunks_indexed": 0,
@@ -279,7 +282,7 @@ async def index_text_documents(
 
         # Per-file reconciliation: fetch existing chunk hashes
         async with pool.acquire() as conn:
-            existing: Dict[int, str] = await _fetch_existing_chunks(
+            existing: dict[int, str] = await _fetch_existing_chunks(
                 conn, table, owner_column, owner_id, file_path
             )
 
@@ -314,14 +317,13 @@ async def index_text_documents(
                 stats["chunks_indexed"] += len(batch)
             stats["files_indexed"] += 1
 
-        # Delete stale chunks (file was re-split into fewer chunks)
+        # Always clean up orphaned high-index chunks
         new_chunk_count = len(file_chunks)
-        if new_chunk_count < len(existing):
-            async with pool.acquire() as conn:
-                deleted = await _delete_stale_chunks(
-                    conn, table, owner_column, owner_id, file_path, new_chunk_count
-                )
-            stats["chunks_deleted"] += deleted
+        async with pool.acquire() as conn:
+            deleted = await _delete_stale_chunks(
+                conn, table, owner_column, owner_id, file_path, new_chunk_count
+            )
+        stats["chunks_deleted"] += deleted
 
         if progress_cb and (
             processed_idx % progress_interval == 0 or processed_idx == total_files
