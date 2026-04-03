@@ -41,30 +41,31 @@ async def register_model(
         framework: Model framework name.
         is_default: Whether this is the default model for its purpose.
     """
-    if is_default:
+    async with conn.transaction():
+        if is_default:
+            await conn.execute(
+                """
+                UPDATE embedding_models SET is_default = FALSE
+                WHERE purpose = $1
+                """,
+                purpose,
+            )
         await conn.execute(
             """
-            UPDATE embedding_models SET is_default = FALSE
-            WHERE purpose = $1
+            INSERT INTO embedding_models (id, purpose, dimensions, framework, is_default)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO UPDATE
+                SET purpose     = EXCLUDED.purpose,
+                    dimensions  = EXCLUDED.dimensions,
+                    framework   = EXCLUDED.framework,
+                    is_default  = EXCLUDED.is_default
             """,
+            model_id,
             purpose,
+            dimensions,
+            framework,
+            is_default,
         )
-    await conn.execute(
-        """
-        INSERT INTO embedding_models (id, purpose, dimensions, framework, is_default)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (id) DO UPDATE
-            SET purpose     = EXCLUDED.purpose,
-                dimensions  = EXCLUDED.dimensions,
-                framework   = EXCLUDED.framework,
-                is_default  = EXCLUDED.is_default
-        """,
-        model_id,
-        purpose,
-        dimensions,
-        framework,
-        is_default,
-    )
     logger.info("Registered embedding model %s (purpose=%s, dims=%d)", model_id, purpose, dimensions)
 
 
@@ -131,6 +132,11 @@ async def validate_dimensions(
     if row is None:
         raise ValueError(f"Model {model_id!r} not found in registry; register it first")
     expected = row["dimensions"]
+    if expected == 0:
+        # dimensions = 0 is a sentinel for models that do not produce
+        # fixed-size embeddings (e.g. cross-encoders / rerankers)
+        logger.debug("Skipping dimension check for %s (dimensions=0 sentinel)", model_id)
+        return
     if expected != actual_dims:
         raise ValueError(
             f"Dimension mismatch for model {model_id!r}: "
