@@ -15,6 +15,12 @@ hierarchical memory specification:
       ``parent_id`` column.
     - ``memory_categories`` maps memory items to categories in a
       many‑to‑many relationship.
+    - ``embedding_models`` is the authoritative registry of models used
+      for text, code, and reranking purposes.
+    - ``text_chunks`` stores chunked text content with embeddings for
+      RAG retrieval, scoped to a project.
+    - ``global_text_chunks`` stores text chunks accessible across all
+      projects, keyed by source.
 
 The ``embedding`` column uses the ``vector`` type provided by
 ``pgvector``. An index is created using the ``ivfflat`` index type
@@ -206,6 +212,98 @@ ON global_code_chunks (content_hash);
 
 CREATE INDEX IF NOT EXISTS idx_global_code_chunks_embedding
 ON global_code_chunks USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+"""
+
+CREATE_EMBEDDING_MODELS_TABLE = """
+CREATE TABLE IF NOT EXISTS embedding_models (
+    id TEXT PRIMARY KEY,
+    purpose TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    framework TEXT NOT NULL DEFAULT 'sentence-transformers',
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+SEED_EMBEDDING_MODELS = """
+INSERT INTO embedding_models (id, purpose, dimensions, framework, is_default)
+VALUES
+    ('BAAI/bge-base-en-v1.5', 'text', 768, 'sentence-transformers', TRUE),
+    ('microsoft/codebert-base', 'code', 768, 'sentence-transformers', TRUE),
+    ('cross-encoder/ms-marco-MiniLM-L-6-v2', 'rerank', 0, 'sentence-transformers', TRUE)
+ON CONFLICT (id) DO NOTHING;
+"""
+
+CREATE_TEXT_CHUNKS_TABLE = """
+CREATE TABLE IF NOT EXISTS text_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    chunk_type TEXT NOT NULL DEFAULT 'text',
+    header_context TEXT NOT NULL DEFAULT '',
+    start_char INTEGER NOT NULL DEFAULT 0,
+    end_char INTEGER NOT NULL DEFAULT 0,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'file',
+    embedding vector(768) NOT NULL,
+    embedding_model TEXT NOT NULL REFERENCES embedding_models(id),
+    embedding_status TEXT NOT NULL DEFAULT 'ready',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (project_id, file_path, chunk_index)
+);
+"""
+
+CREATE_GLOBAL_TEXT_CHUNKS_TABLE = """
+CREATE TABLE IF NOT EXISTS global_text_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    source_key TEXT NOT NULL,
+    source_project_id UUID NULL REFERENCES projects(id) ON DELETE SET NULL,
+    file_path TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    chunk_type TEXT NOT NULL DEFAULT 'text',
+    header_context TEXT NOT NULL DEFAULT '',
+    start_char INTEGER NOT NULL DEFAULT 0,
+    end_char INTEGER NOT NULL DEFAULT 0,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'file',
+    embedding vector(768) NOT NULL,
+    embedding_model TEXT NOT NULL REFERENCES embedding_models(id),
+    embedding_status TEXT NOT NULL DEFAULT 'ready',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (source_key, file_path, chunk_index)
+);
+"""
+
+CREATE_TEXT_CHUNKS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_text_chunks_project_status
+ON text_chunks (project_id, embedding_status);
+
+CREATE INDEX IF NOT EXISTS idx_text_chunks_content_hash
+ON text_chunks (content_hash);
+
+CREATE INDEX IF NOT EXISTS idx_text_chunks_file_path
+ON text_chunks (project_id, file_path);
+
+CREATE INDEX IF NOT EXISTS idx_text_chunks_embedding
+ON text_chunks USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+"""
+
+CREATE_GLOBAL_TEXT_CHUNKS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_global_text_chunks_source_status
+ON global_text_chunks (source_key, embedding_status);
+
+CREATE INDEX IF NOT EXISTS idx_global_text_chunks_content_hash
+ON global_text_chunks (content_hash);
+
+CREATE INDEX IF NOT EXISTS idx_global_text_chunks_embedding
+ON global_text_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 """
 
