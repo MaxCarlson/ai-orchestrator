@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Optional
+from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -140,7 +140,7 @@ def split_documents(
     for doc in docs:
         source = doc.metadata.get("source", "")
         source_type = doc.metadata.get("source_type", "file")
-        ext = source.rsplit(".", 1)[-1].lower() if "." in source else ""
+        ext = Path(source).suffix.lstrip(".").lower()
 
         # Route to appropriate splitter
         is_markdown = ext in {"md", "markdown"} or source_type == "markdown"
@@ -167,7 +167,7 @@ def split_documents(
 
             content = chunk.page_content
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            filename = source.split("/")[-1] if "/" in source else source
+            filename = Path(source).name
 
             chunk.metadata.update(
                 {

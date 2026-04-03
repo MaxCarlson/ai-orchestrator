@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_core.documents import Document
@@ -44,6 +43,9 @@ def load_text_documents(path: Path) -> list[Document]:
         List of Document objects with page_content and metadata.
         metadata keys: source (absolute file path str), source_type ('file').
     """
+    if not path.exists():
+        raise FileNotFoundError(f"Document path not found: {path}")
+
     docs: list[Document] = []
     for ext in TEXT_EXTENSIONS:
         glob = f"**/*{ext}"
@@ -79,10 +81,12 @@ def load_pdf_documents(path: Path) -> list[Document]:
         List of Document objects. metadata keys: source, source_type ('pdf').
     """
     try:
-        from langchain_community.document_loaders import UnstructuredPDFLoader  # noqa: PLC0415
+        import unstructured  # noqa: F401  # Check availability before proceeding
     except ImportError:
         logger.warning("unstructured package not installed; PDF loading disabled")
         return []
+
+    from langchain_community.document_loaders import UnstructuredPDFLoader
 
     docs: list[Document] = []
     for pdf_path in path.rglob("*.pdf"):
