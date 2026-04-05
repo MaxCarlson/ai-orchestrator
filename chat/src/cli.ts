@@ -11,6 +11,7 @@ const { values, positionals } = parseArgs({
     'no-embeddings': { type: 'boolean', default: false },
     dir:             { type: 'string',  short: 'd', default: process.cwd() },
     system:          { type: 'string',  short: 's' },
+    'local-url':     { type: 'string',  short: 'u' },
     serve:           { type: 'boolean', default: false },
     port:            { type: 'string',  default: '8765' },
     help:            { type: 'boolean', short: 'h', default: false },
@@ -36,6 +37,7 @@ Options:
       --no-embeddings     Disable semantic context injection
   -d, --dir <path>        Working directory (default: cwd)
   -s, --system <prompt>   Override system prompt
+  -u, --local-url <url>   LM Studio base URL (default: http://localhost:1234/v1)
       --serve             Start WebSocket API server (for web UI)
       --port <port>       Port for --serve mode (default: 8765)
   -h, --help              Show this help
@@ -49,12 +51,14 @@ Environment:
   ANTHROPIC_API_KEY       Required — your Anthropic API key
   ANTHROPIC_MODEL         Default model override
   CHAT_SYSTEM_PROMPT      Default system prompt
+  LM_STUDIO_URL           Local model endpoint (default: http://localhost:1234/v1)
   `)
   process.exit(0)
 }
 
 // Apply flag overrides before loading Ink
 if (values.model)            setConfig({ model: values.model })
+if (values['local-url'])     setConfig({ localUrl: values['local-url'] })
 if (values.system)           setConfig({ systemPrompt: values.system })
 if (values['no-project'])    setProjectContext({ enabled: false })
 if (values['no-embeddings']) setProjectContext({ embeddingsEnabled: false })
