@@ -1,1 +1,10 @@
-{}
+{
+  "name": "ai-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["chat"],
+  "scripts": {
+    "chat": "cd chat && ~/.bun/bin/bun run src/cli.ts",
+    "chat:test": "cd chat && ~/.bun/bin/bun test"
+  }
+}

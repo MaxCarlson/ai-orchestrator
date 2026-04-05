@@ -7,6 +7,12 @@ A distributed system for orchestrating AI agents, managing tasks, and coordinati
 ## Quick Reference
 
 ```bash
+# AI chat agent (from any directory)
+ai                          # Start interactive TUI
+ai "ask something"          # Start with initial message
+ai -m claude-opus-4-6       # Use a specific model
+ai --no-project             # Skip project auto-detection
+
 # Build + start everything with one command
 ./build/build_all.sh
 
@@ -99,6 +105,124 @@ unless you name a specific service.
 │                                                                   │
 └───────────────────────────────────────────────────────────────────┘
 ```
+
+## AI Chat Agent (`ai` command)
+
+A standalone TypeScript chat agent — a claude-code–style REPL you can run from anywhere. It connects to the Anthropic API, auto-detects your current project, and gives you a full suite of slash commands.
+
+### Installation
+
+```bash
+# One-time: add ~/.local/bin to PATH if not already there
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+
+# Install the ai command (symlink into PATH)
+ln -sf ~/projects/ai-orchestrator/bin/ai ~/.local/bin/ai
+
+# Verify
+ai --version
+# ai-orchestrator chat v0.1.0
+```
+
+**Requires:**
+- `ANTHROPIC_API_KEY` in your environment (add to `~/.zshrc`)
+- `bun` installed (`curl -fsSL https://bun.sh/install | bash`)
+
+### Usage
+
+```bash
+# Start interactive TUI
+ai
+
+# Start with an initial message
+ai "explain the task queue design"
+
+# Override model
+ai -m claude-opus-4-6
+
+# Disable project auto-detection
+ai --no-project
+
+# Use a different working directory
+ai -d ~/projects/other-repo
+
+# Override system prompt
+ai -s "You are a Python expert"
+
+# Show all options
+ai --help
+```
+
+### Project Auto-Detection
+
+When started inside a git repository, `ai` automatically loads that project's context:
+
+- Detects the git root and project name (from remote URL or directory name)
+- Loads `CHAT.md` from the git root as **project memory** (injected into system prompt)
+- Toggle on/off with `--no-project` flag or `/project off` slash command
+
+**Create a `CHAT.md` at your repo root** to give the agent persistent project context:
+
+```markdown
+# MyProject
+
+## Architecture
+This is a FastAPI service with a PostgreSQL backend...
+
+## Conventions
+- All API routes live in api/routes/
+- Use async/await throughout
+- Tests go in tests/<module>_test.py
+```
+
+### Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | List all commands |
+| `/clear` | Clear conversation history |
+| `/model [name]` | Show or switch model |
+| `/config [key] [value]` | View or set config (model, maxTurns, systemPrompt) |
+| `/context` | Show session info, working dir, project |
+| `/cost` | Show token usage and estimated API cost |
+| `/compact` | Request conversation compaction (stub — coming soon) |
+| `/session list` | List saved sessions |
+| `/memory` | Show message count |
+| `/project [on\|off\|reload\|status]` | Toggle project context |
+| `/embeddings [on\|off\|status]` | Toggle semantic context injection |
+| `/tools` | List available tools |
+| `/exit` or `/quit` | Exit the TUI |
+
+### Built-in Tools
+
+The agent has access to these tools automatically:
+
+| Tool | Description |
+|------|-------------|
+| `bash` | Execute shell commands |
+| `file_read` | Read file contents |
+| `file_edit` | Search-and-replace in files |
+| `glob` | Find files by pattern |
+| `grep` | Search file contents with ripgrep |
+| `web_fetch` | Fetch a URL and extract text |
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Required — your Anthropic API key |
+| `ANTHROPIC_MODEL` | Default model (overrides built-in default) |
+| `CHAT_SYSTEM_PROMPT` | Default system prompt |
+
+### Session Persistence
+
+Conversations are saved to `~/.ai-orchestrator/sessions/` as JSON. Use `/session list` to see past sessions. Full session resume is planned for a future release.
+
+### Local GPU Models (Planned)
+
+The `ai` command currently routes all requests to the Anthropic API. Support for local LM Studio models (running on the RTX 5090 at port 1234) is planned — the `/model` command will accept local model names (e.g., `/model qwen2.5-coder`) and route them to `http://localhost:1234` via the OpenAI-compatible API. For now, use `ai -m claude-haiku-4-5-20251001` for the fastest/cheapest Anthropic option.
+
+---
 
 ## Components
 
