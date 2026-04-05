@@ -1,5 +1,6 @@
 import { queryLoop } from './query.js'
 import { queryLoopOpenAI } from './backends/openai_compat.js'
+import { ensureLmStudio } from './backends/lmstudio.js'
 import { getConfig } from './commands/config.js'
 import { detectProject } from './project/detector.js'
 import { setProjectContext, buildProjectSystemPromptAddition } from './project/context.js'
@@ -33,6 +34,7 @@ export type EngineEvent =
   | StreamEvent
   | { type: 'command_output'; text: string }
   | { type: 'command_clear' }
+  | { type: 'status'; text: string }       // transient info (LM Studio startup, etc.)
   | { type: 'session_saved'; sessionId: string }
 
 export class QueryEngine {
@@ -121,18 +123,15 @@ export class QueryEngine {
     const isLocal = !model.startsWith('claude-')
 
     if (isLocal) {
-      // Quick health check before starting the loop — gives a clear error instead of
-      // a cryptic "Connection error." if LM Studio isn't running.
-      const reachable = await fetch(`${localUrl}/models`, { signal: AbortSignal.timeout(2000) })
-        .then(r => r.ok)
-        .catch(() => false)
-      if (!reachable) {
-        yield {
-          type: 'error',
-          error: `Cannot reach LM Studio at ${localUrl}.\n\nTo fix:\n  1. Open LM Studio (Windows app)\n  2. Load a model (e.g. ${model})\n  3. Go to Local Server → Start Server (port 1234)\n\nOr switch to Claude: /model claude-sonnet-4-6`,
-        }
-        return
+      // Auto-start LM Studio server and load the model if needed.
+      for await (const status of ensureLmStudio(model, localUrl)) {
+        yield { type: 'status', text: status }
       }
+      // ensureLmStudio returns false via the generator return value, but we detect
+      // failure by checking if the server is now reachable after the loop.
+      const ready = await fetch(`${localUrl}/models`, { signal: AbortSignal.timeout(2000) })
+        .then(r => r.ok).catch(() => false)
+      if (!ready) return
     }
 
     const loop = isLocal

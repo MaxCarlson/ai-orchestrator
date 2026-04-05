@@ -9,7 +9,7 @@ export interface ChatConfig {
 
 let _config: ChatConfig = {
   // Local LM Studio is the primary backend. To use Claude: ai -m claude-sonnet-4-6
-  model: process.env['AI_MODEL'] ?? process.env['ANTHROPIC_MODEL'] ?? 'gemma-4-27b-it',
+  model: process.env['AI_MODEL'] ?? process.env['ANTHROPIC_MODEL'] ?? 'qwen3-30b-a3b-abliterated',
   systemPrompt: process.env['CHAT_SYSTEM_PROMPT'] ?? 'You are a helpful coding assistant.',
   maxTurns: 20,
   localUrl: process.env['LM_STUDIO_URL'] ?? 'http://localhost:1234/v1',

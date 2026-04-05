@@ -7,13 +7,15 @@ const ANTHROPIC_MODELS = [
   'claude-haiku-4-5-20251001',
 ]
 
-// Local model IDs as loaded in LM Studio — match the filename/model name shown in LM Studio UI
+// Local model IDs — match paths shown in `lms ls` (run: /mnt/c/Users/<you>/.lmstudio/bin/lms.exe ls)
 const LOCAL_MODELS = [
-  'gemma-4-27b-it',            // Deep research / planning / general agent (Gemma 4 31B-it)
-  'devstral-small-2',          // Agentic coding / repo editing (Devstral Small 2 24B)
-  'qwen3-32b',                 // Alternative: reasoning + coding + agentic
-  'gemma-4-4b-it',             // Summarization / memory compression (Gemma 4 E4B)
-  'gemma-4-2b-it',             // Router / classifier / minimal mode (Gemma 4 E2B)
+  'qwen/qwen3-coder-next',                    // Coding / agentic (80B)
+  'openai/gpt-oss-20b',                       // General purpose (20B)
+  'qwen3-30b-a3b-abliterated',                // General / reasoning (30B MoE)
+  'deepseek/deepseek-r1-0528-qwen3-8b',       // Reasoning (8B)
+  'mistralai/ministral-3-14b-reasoning',      // Reasoning (14B)
+  'meta-llama-3.1-8b-instruct-abliterated',   // Fast general (8B)
+  'qwen3-4b-abliterated',                     // Fast / router (4B)
 ]
 
 export class ModelCommand implements SlashCommand {

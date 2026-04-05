@@ -46,6 +46,11 @@ export function REPL({ workingDir, engine: engineProp, initialMessage }: REPLPro
     let responseText = ''
 
     for await (const event of engineRef.current.submit(input, abort.signal)) {
+      if (event.type === 'status') {
+        setMessages(prev => [...prev, { role: 'system', content: event.text, timestamp: Date.now() }])
+        continue
+      }
+
       if (event.type === 'command_output') {
         setMessages(prev => [...prev, { role: 'command', content: event.text, timestamp: Date.now() }])
         break
