@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react'
 import { Box, Text, useApp, useStdout } from 'ink'
+import { getConfig } from '../commands/config.js'
 import { MessageList } from './MessageList.js'
 import { InputBar } from './InputBar.js'
 import { ToolProgress } from './ToolProgress.js'
@@ -99,6 +100,9 @@ export function REPL({ workingDir, engine: engineProp, initialMessage }: REPLPro
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const terminalHeight = stdout.rows ?? 24
+  // Reserve lines for: header (3) + streaming (2) + tool progress (1) + input (3)
+  const listHeight = Math.max(6, terminalHeight - 9)
+  const model = getConfig().model
 
   return (
     <Box flexDirection="column" height={terminalHeight}>
@@ -106,11 +110,11 @@ export function REPL({ workingDir, engine: engineProp, initialMessage }: REPLPro
         <Text bold color="blue">{'AI Orchestrator — Chat Agent'}</Text>
       </Box>
 
-      <MessageList messages={messages} />
+      <MessageList messages={messages} maxHeight={listHeight} />
 
       {streaming && currentResponse && (
         <Box paddingX={1}>
-          <Text color="blue" bold>{'Claude  '}</Text>
+          <Text color="blue" bold>{model + '  '}</Text>
           <Text wrap="wrap">{currentResponse}</Text>
         </Box>
       )}
