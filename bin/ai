@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# ai — AI Orchestrator chat agent CLI
-# Install: ln -sf "$(pwd)/bin/ai" ~/.local/bin/ai
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHAT_DIR="$(dirname "$SCRIPT_DIR")/chat"
-exec bun run "$CHAT_DIR/src/cli.ts" "$@"
