@@ -21,15 +21,15 @@ const { values, positionals } = parseArgs({
 })
 
 if (values.version) {
-  console.log(`ai-orchestrator chat v${VERSION}`)
+  console.log(`aioc (ai-orchestrator) v${VERSION}`)
   process.exit(0)
 }
 
 if (values.help) {
   console.log(`
-ai — AI Orchestrator Chat Agent v${VERSION}
+aioc — AI Orchestrator Chat Agent v${VERSION}
 
-Usage: ai [options] [initial message]
+Usage: aioc [options] [initial message]
 
 Options:
   -m, --model <name>      Model (default: gemma-4-27b-it for local, or AI_MODEL env)

@@ -8,10 +8,10 @@ A distributed system for orchestrating AI agents, managing tasks, and coordinati
 
 ```bash
 # AI chat agent (from any directory)
-ai                          # Start interactive TUI
-ai "ask something"          # Start with initial message
-ai -m claude-opus-4-6       # Use a specific model
-ai --no-project             # Skip project auto-detection
+aioc                          # Start interactive TUI
+aioc "ask something"          # Start with initial message
+aioc -m claude-opus-4-6       # Use a specific model
+aioc --no-project             # Skip project auto-detection
 
 # Build + start everything with one command
 ./build/build_all.sh
@@ -106,7 +106,7 @@ unless you name a specific service.
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-## AI Chat Agent (`ai` command)
+## AI Chat Agent (`aioc` command)
 
 A standalone TypeScript chat agent — a claude-code–style REPL you can run from anywhere. It connects to the Anthropic API, auto-detects your current project, and gives you a full suite of slash commands.
 
@@ -116,12 +116,12 @@ A standalone TypeScript chat agent — a claude-code–style REPL you can run fr
 # One-time: add ~/.local/bin to PATH if not already there
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
-# Install the ai command (symlink into PATH)
-ln -sf ~/projects/ai-orchestrator/bin/ai ~/.local/bin/ai
+# Install the aioc command (symlink into PATH)
+ln -sf ~/projects/ai-orchestrator/bin/aioc ~/.local/bin/aioc
 
 # Verify
-ai --version
-# ai-orchestrator chat v0.1.0
+aioc --version
+# aioc (ai-orchestrator) v0.1.0
 ```
 
 **Requires:**
@@ -132,30 +132,30 @@ ai --version
 
 ```bash
 # Start interactive TUI
-ai
+aioc
 
 # Start with an initial message
-ai "explain the task queue design"
+aioc "explain the task queue design"
 
 # Override model
-ai -m claude-opus-4-6
+aioc -m claude-opus-4-6
 
 # Disable project auto-detection
-ai --no-project
+aioc --no-project
 
 # Use a different working directory
-ai -d ~/projects/other-repo
+aioc -d ~/projects/other-repo
 
 # Override system prompt
-ai -s "You are a Python expert"
+aioc -s "You are a Python expert"
 
 # Show all options
-ai --help
+aioc --help
 ```
 
 ### Project Auto-Detection
 
-When started inside a git repository, `ai` automatically loads that project's context:
+When started inside a git repository, `aioc` automatically loads that project's context:
 
 - Detects the git root and project name (from remote URL or directory name)
 - Loads `CHAT.md` from the git root as **project memory** (injected into system prompt)
@@ -220,7 +220,7 @@ Conversations are saved to `~/.ai-orchestrator/sessions/` as JSON. Use `/session
 
 ### Local GPU Models (LM Studio + RTX 5090)
 
-The `ai` command auto-routes by model name: any model NOT starting with `claude-` is sent to LM Studio's OpenAI-compatible API.
+The `aioc` command auto-routes by model name: any model NOT starting with `claude-` is sent to LM Studio's OpenAI-compatible API.
 
 **Prerequisites:**
 1. Install [LM Studio](https://lmstudio.ai) (≥0.3)
@@ -231,13 +231,13 @@ The `ai` command auto-routes by model name: any model NOT starting with `claude-
 
 ```bash
 # Use a local model (LM Studio must be running with model loaded)
-ai -m gemma-4-27b-it
+aioc -m gemma-4-27b-it
 
 # Or switch model in the TUI
 /model gemma-4-27b-it
 
 # Custom LM Studio address
-ai -m devstral-small-2 --local-url http://localhost:1234/v1
+aioc -m devstral-small-2 --local-url http://localhost:1234/v1
 
 # Or set it permanently via env
 export LM_STUDIO_URL=http://localhost:1234/v1

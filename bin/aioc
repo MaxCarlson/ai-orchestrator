@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# aioc — AI Orchestrator Chat CLI
+# Install: ln -sf "$(pwd)/bin/aioc" ~/.local/bin/aioc
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CHAT_DIR="$(dirname "$SCRIPT_DIR")/chat"
+BUN="${BUN:-${HOME}/.bun/bin/bun}"
+exec "$BUN" run "$CHAT_DIR/src/cli.ts" "$@"
