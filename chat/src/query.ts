@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { Tool as AnthropicTool } from '@anthropic-ai/sdk/resources/messages.js'
 import { toApiMessage } from './types/message.js'
 import type { Message, StreamEvent } from './types/message.js'
+import { recordTokenUsage } from './session/tokenTracker.js'
 import type { Tool, ToolResult } from './types/tool.js'
 
 export interface QueryOptions {
@@ -91,6 +92,11 @@ export async function* queryLoop(
 
     // Collect the final message (all content blocks assembled)
     const finalMsg = await stream.finalMessage()
+    recordTokenUsage(
+      finalMsg.usage.input_tokens,
+      finalMsg.usage.output_tokens,
+      finalMsg.usage.cache_read_input_tokens ?? 0,
+    )
     history.push({ role: 'assistant', content: finalMsg.content })
 
     if (pendingToolUse.length === 0) break  // No tool calls — done
