@@ -107,14 +107,19 @@ export async function* queryLoopOpenAI(
 
     let stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>
 
+    // qwen3 and similar models may emit <think>…</think> blocks before the response.
+    // We do NOT force enable_thinking via chat_template_kwargs — letting it decide naturally
+    // avoids the model putting its entire response inside the thinking block.
+    const isQwen3 = /qwen3/i.test(model)
+
     try {
       stream = await client.chat.completions.create({
         model,
         messages: openAIMessages,
         ...(openAITools ? { tools: openAITools, tool_choice: 'auto' as const } : {}),
-        stream: true,
+        stream: true as const,
         stream_options: { include_usage: true },
-        max_tokens: 8096,
+        max_tokens: isQwen3 ? 32768 : 8096,
       })
     } catch (err) {
       yield { type: 'error', error: (err as Error).message }
@@ -124,6 +129,13 @@ export async function* queryLoopOpenAI(
     let responseText = ''
     const toolCallMap = new Map<number, { id: string; name: string; argumentsJson: string }>()
     let lastUsage: { prompt_tokens: number; completion_tokens: number } | null = null
+
+    // Track whether we're inside a <think>...</think> block (qwen3 thinking tokens)
+    let inThinkBlock = false
+    let thinkBuffer = ''
+    // If the model puts everything inside <think> (enabled-thinking models),
+    // fall back to showing the thinking content as the response.
+    let thinkingContent = ''
 
     for await (const chunk of stream) {
       if (abortSignal.aborted) { yield { type: 'error', error: 'Aborted' }; return }
@@ -138,8 +150,49 @@ export async function* queryLoopOpenAI(
       const delta = choice.delta
 
       if (delta.content) {
-        responseText += delta.content
-        yield { type: 'text_delta', text: delta.content }
+        let text = delta.content
+
+        // Handle <think> block start (may arrive split across chunks)
+        if (!inThinkBlock && (thinkBuffer + text).includes('<think>')) {
+          const combined = thinkBuffer + text
+          const start = combined.indexOf('<think>')
+          if (start >= 0) {
+            const before = combined.slice(0, start)
+            if (before) { responseText += before; yield { type: 'text_delta', text: before } }
+            inThinkBlock = true
+            thinkBuffer = combined.slice(start)
+            yield { type: 'thinking_start' }
+            text = ''
+          }
+        } else if (!inThinkBlock) {
+          thinkBuffer += text
+          // Keep thinkBuffer small — only need enough to detect '<think>' boundary
+          if (thinkBuffer.length > 20) {
+            const flush = thinkBuffer.slice(0, thinkBuffer.length - 7)
+            responseText += flush
+            yield { type: 'text_delta', text: flush }
+            thinkBuffer = thinkBuffer.slice(-7)
+          }
+          text = ''
+        }
+
+        if (inThinkBlock && text) {
+          thinkBuffer += text
+          thinkingContent += text
+          yield { type: 'thinking_delta', text }
+        }
+
+        // Check if think block ends in our buffer
+        if (inThinkBlock) {
+          const endIdx = thinkBuffer.indexOf('</think>')
+          if (endIdx >= 0) {
+            inThinkBlock = false
+            yield { type: 'thinking_end' }
+            const after = thinkBuffer.slice(endIdx + 8)
+            thinkBuffer = ''
+            if (after) { responseText += after; yield { type: 'text_delta', text: after } }
+          }
+        }
       }
 
       if (delta.tool_calls) {
@@ -158,6 +211,27 @@ export async function* queryLoopOpenAI(
             }
           }
         }
+      }
+    }
+
+    // Flush any remaining thinkBuffer that didn't contain a <think> tag
+    if (thinkBuffer && !inThinkBlock) {
+      responseText += thinkBuffer
+      yield { type: 'text_delta', text: thinkBuffer }
+      thinkBuffer = ''
+    }
+    if (inThinkBlock) {
+      // Unclosed think block — close it
+      yield { type: 'thinking_end' }
+    }
+
+    // Fallback: if model put everything in <think> (enabled-thinking mode),
+    // yield the thinking content as the actual response so the user sees something.
+    if (!responseText.trim() && thinkingContent.trim()) {
+      const fallback = thinkingContent.replace(/<\/?think>/gi, '').trim()
+      if (fallback) {
+        responseText = fallback
+        yield { type: 'text_delta', text: fallback }
       }
     }
 

@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process'
 import { queryLoop } from './query.js'
 import { queryLoopOpenAI } from './backends/openai_compat.js'
 import { ensureLmStudio } from './backends/lmstudio.js'
@@ -27,8 +28,40 @@ import { GrepTool } from './tools/GrepTool.js'
 import { WebFetchTool } from './tools/WebFetchTool.js'
 import type { Message, StreamEvent } from './types/message.js'
 import type { Tool } from './types/tool.js'
-import { homedir } from 'os'
+import { homedir, platform } from 'os'
 import { join } from 'path'
+
+function buildEnvBlock(workingDir: string, model: string): string {
+  const date = new Date().toISOString().split('T')[0]
+  const shell = process.env['SHELL'] ?? 'unknown'
+  const os = platform()
+
+  let gitBranch = ''
+  let gitStatus = ''
+  try {
+    const branchResult = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: workingDir, encoding: 'utf8' })
+    if (branchResult.status === 0) gitBranch = branchResult.stdout.trim()
+
+    const statusResult = spawnSync('git', ['status', '--short'], { cwd: workingDir, encoding: 'utf8' })
+    if (statusResult.status === 0) {
+      const lines = statusResult.stdout.trim().split('\n').filter(Boolean)
+      gitStatus = lines.slice(0, 20).join('\n') + (lines.length > 20 ? `\n... (${lines.length - 20} more)` : '')
+    }
+  } catch { /* not a git repo or git not installed */ }
+
+  const lines = [
+    '\n\n## Environment',
+    `Working directory: ${workingDir}`,
+    `Platform: ${os}`,
+    `Shell: ${shell}`,
+    `Model: ${model}`,
+    `Date: ${date}`,
+  ]
+  if (gitBranch) lines.push(`Git branch: ${gitBranch}`)
+  if (gitStatus) lines.push(`Git status:\n${gitStatus}`)
+
+  return lines.join('\n')
+}
 
 export type EngineEvent =
   | StreamEvent
@@ -127,12 +160,17 @@ export class QueryEngine {
     const cfg = getConfig()
     const { model, maxTurns, systemPrompt, localUrl } = cfg
     const projectAddition = buildProjectSystemPromptAddition()
+    const envBlock = buildEnvBlock(this.workingDir, model)
+    const fullSystemPrompt = systemPrompt + projectAddition + envBlock
 
     const isLocal = !model.startsWith('claude-')
 
+    // Enable extended thinking for Anthropic models that support it (opus-4, sonnet-4+)
+    const thinkingEnabled = !isLocal && /claude-(opus|sonnet)-[4-9]/.test(model)
+
     const loop = isLocal
-      ? queryLoopOpenAI(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir, localUrl })
-      : queryLoop(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir })
+      ? queryLoopOpenAI(this.messages, this.tools, { model, maxTurns, systemPrompt: fullSystemPrompt, abortSignal, workingDir: this.workingDir, localUrl })
+      : queryLoop(this.messages, this.tools, { model, maxTurns, systemPrompt: fullSystemPrompt, abortSignal, workingDir: this.workingDir, thinkingEnabled })
 
     for await (const event of loop) {
       yield event

@@ -6,6 +6,7 @@ export interface ProjectInfo {
   gitRoot: string
   projectName: string
   chatMd: string | null
+  claudeMd: string | null
 }
 
 /**
@@ -25,6 +26,9 @@ export async function detectProject(workingDir: string): Promise<ProjectInfo | n
   const chatMdPath = join(gitRoot, 'CHAT.md')
   const chatMd = existsSync(chatMdPath) ? readFileSync(chatMdPath, 'utf-8') : null
 
+  const claudeMdPath = join(gitRoot, 'CLAUDE.md')
+  const claudeMd = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf-8') : null
+
   const remoteResult = spawnSync('git', ['remote', 'get-url', 'origin'], {
     cwd: gitRoot,
     encoding: 'utf8',
@@ -35,5 +39,5 @@ export async function detectProject(workingDir: string): Promise<ProjectInfo | n
     ? (remoteName.split('/').pop()?.replace(/\.git$/, '') ?? dirName)
     : dirName
 
-  return { gitRoot, projectName, chatMd }
+  return { gitRoot, projectName, chatMd, claudeMd }
 }

@@ -29,9 +29,10 @@ interface InputBarProps {
   suggestions: SlashSuggestion[]
   suggestionIndex: number   // index into suggestions[]
   disabled?: boolean
+  hasThinking?: boolean     // show Ctrl+O hint when last message has thinking
 }
 
-export function InputBar({ value, suggestions, suggestionIndex, disabled = false }: InputBarProps) {
+export function InputBar({ value, suggestions, suggestionIndex, disabled = false, hasThinking = false }: InputBarProps) {
   // Compute scrolling window so selected item is always visible
   const count = Math.min(suggestions.length, SUGGESTION_VISIBLE)
   const windowStart = Math.min(
@@ -81,7 +82,9 @@ export function InputBar({ value, suggestions, suggestionIndex, disabled = false
       {!value && !disabled && (
         <Box paddingX={3}>
           <Text color="gray" dimColor>
-            {'/ for commands  ·  PgUp/PgDn to scroll  ·  Ctrl+C to exit'}
+            {hasThinking
+              ? '/ for commands  ·  PgUp/PgDn to scroll  ·  Ctrl+O thinking  ·  Ctrl+C to exit'
+              : '/ for commands  ·  PgUp/PgDn to scroll  ·  Ctrl+C to exit'}
           </Text>
         </Box>
       )}

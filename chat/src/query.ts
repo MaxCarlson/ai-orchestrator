@@ -12,6 +12,7 @@ export interface QueryOptions {
   abortSignal: AbortSignal
   workingDir: string
   localUrl?: string
+  thinkingEnabled?: boolean
 }
 
 export interface PendingToolCall {
@@ -84,7 +85,7 @@ export async function* queryLoop(
   tools: Tool[],
   options: QueryOptions,
 ): AsyncGenerator<StreamEvent> {
-  const { model, maxTurns, systemPrompt, abortSignal, workingDir } = options
+  const { model, maxTurns, systemPrompt, abortSignal, workingDir, thinkingEnabled } = options
   let turns = 0
 
   while (turns < maxTurns) {
@@ -97,27 +98,30 @@ export async function* queryLoop(
     try {
       stream = client.messages.stream({
         model,
-        max_tokens: 8096,
+        max_tokens: thinkingEnabled ? 16000 : 8096,
         system: systemPrompt,
         messages: apiMessages,
         ...(toolDefs.length > 0 ? { tools: toolDefs } : {}),
-      })
+        ...(thinkingEnabled ? { thinking: { type: 'enabled' as const, budget_tokens: 8000 } } : {}),
+      } as Parameters<typeof client.messages.stream>[0])
     } catch (err) {
       yield { type: 'error', error: (err as Error).message }
       return
     }
 
     const pendingToolUse: PendingToolCall[] = []
-    let currentBlockIsToolUse = false
+    let currentBlockType: string = ''
 
     for await (const event of stream) {
       if (abortSignal.aborted) { yield { type: 'error', error: 'Aborted' }; return }
 
       if (event.type === 'content_block_start') {
-        currentBlockIsToolUse = event.content_block.type === 'tool_use'
+        currentBlockType = event.content_block.type
         if (event.content_block.type === 'tool_use') {
           pendingToolUse.push({ id: event.content_block.id, name: event.content_block.name, inputJson: '' })
           yield { type: 'tool_use_start', toolName: event.content_block.name, toolUseId: event.content_block.id }
+        } else if (event.content_block.type === 'thinking') {
+          yield { type: 'thinking_start' }
         }
       } else if (event.type === 'content_block_delta') {
         if (event.delta.type === 'text_delta') {
@@ -127,9 +131,13 @@ export async function* queryLoop(
           if (last) last.inputJson += event.delta.partial_json
           yield { type: 'tool_use_delta', toolInput: event.delta.partial_json }
         }
+        if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
+          yield { type: 'thinking_delta', text: event.delta.thinking }
+        }
       } else if (event.type === 'content_block_stop') {
-        if (currentBlockIsToolUse) yield { type: 'tool_use_end' }
-        currentBlockIsToolUse = false
+        if (currentBlockType === 'tool_use') yield { type: 'tool_use_end' }
+        if (currentBlockType === 'thinking') yield { type: 'thinking_end' }
+        currentBlockType = ''
       } else if (event.type === 'message_stop') {
         yield { type: 'message_stop' }
       }

@@ -27,6 +27,8 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
     initMessages.map(t => ({ role: 'system' as const, content: t, timestamp: Date.now() }))
   )
   const [streaming, setStreaming]       = useState(false)
+  const [thinking, setThinking]         = useState(false)
+  const [thinkingText, setThinkingText] = useState('')   // live thinking stream
   const [activeTools, setActiveTools]   = useState<ActiveTool[]>([])
   const [currentResponse, setCurrentResponse] = useState('')
 
@@ -43,16 +45,23 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
   const termWidth  = stdout.columns ?? 80
   const termHeight = stdout.rows    ?? 24
 
-  const toolLines      = Math.min(activeTools.filter(t => !t.done).length, TOOL_MAX_LINES)
-  const streamLines    = (streaming && currentResponse) ? 2 : 0
-  const viewportHeight = Math.max(4, termHeight - HEADER_LINES - INPUT_MIN - toolLines - streamLines - 1)
-
-  // Slash suggestions
+  // Slash suggestions (computed before viewportHeight so we can account for their height)
   const showSuggestions = inputValue.startsWith('/') && !inputValue.includes(' ')
   const suggestions = showSuggestions
     ? SLASH_COMMANDS.filter(c => c.name.startsWith(inputValue))
     : []
   const clampedSugIdx = Math.min(suggestionIdx, Math.max(0, suggestions.length - 1))
+
+  // Suggestion box height: borders(2) + optional ↑(1) + items + optional ↓(1)
+  const visibleSugCount = Math.min(suggestions.length, SUGGESTION_VISIBLE)
+  const sugBoxLines = suggestions.length > 0
+    ? 2 + (visibleSugCount) + (suggestions.length > SUGGESTION_VISIBLE ? 2 : 0)
+    : 0
+
+  const toolLines      = Math.min(activeTools.filter(t => !t.done).length, TOOL_MAX_LINES)
+  const streamLines    = (streaming && currentResponse) ? 3 : 0   // label + 2 content lines
+  const thinkingLines  = thinking ? (thinkingText ? 3 : 1) : 0  // label + 2 content lines when text
+  const viewportHeight = Math.max(4, termHeight - HEADER_LINES - INPUT_MIN - toolLines - streamLines - thinkingLines - sugBoxLines - 1)
 
   const scrollPageSize = Math.max(3, Math.floor(viewportHeight * 0.7))
 
@@ -68,6 +77,7 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
     const abort = new AbortController()
     abortRef.current = abort
     let responseText = ''
+    let thinkText = ''
 
     for await (const event of engineRef.current.submit(text, abort.signal)) {
       if (event.type === 'status') {
@@ -82,6 +92,16 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
         setMessages([{ role: 'system', content: 'Conversation cleared.', timestamp: Date.now() }])
         break
       }
+      if (event.type === 'thinking_start') { setThinking(true); continue }
+      if (event.type === 'thinking_delta' && event.text) {
+        thinkText += event.text
+        setThinkingText(thinkText)
+        continue
+      }
+      if (event.type === 'thinking_end') {
+        setThinking(false)
+        continue
+      }
       if (event.type === 'text_delta' && event.text) {
         responseText += event.text
         setCurrentResponse(responseText)
@@ -92,11 +112,22 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
       if (event.type === 'tool_use_end') {
         setActiveTools(prev => prev.map(t => ({ ...t, done: true })))
       }
-      if (event.type === 'message_stop' && responseText) {
-        setMessages(prev => [...prev, { role: 'assistant', content: responseText, timestamp: Date.now() }])
+      if (event.type === 'message_stop' && responseText.trim()) {
+        // Capture values NOW before resetting — React calls the updater fn
+        // asynchronously, so by then the mutable `let` vars would be '' already.
+        const savedText  = responseText
+        const savedThink = thinkText
+        setMessages(prev => [...prev, {
+          role: 'assistant' as const,
+          content: savedText,
+          timestamp: Date.now(),
+          ...(savedThink ? { thinking: savedThink, thinkingExpanded: false } : {}),
+        }])
         setTopIndex(-1)
         responseText = ''
+        thinkText = ''
         setCurrentResponse('')
+        setThinkingText('')
       }
       if (event.type === 'error' && event.error) {
         setMessages(prev => [...prev, { role: 'system', content: `Error: ${event.error}`, timestamp: Date.now() }])
@@ -105,7 +136,9 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
     }
 
     setStreaming(false)
+    setThinking(false)
     setCurrentResponse('')
+    setThinkingText('')
     setActiveTools([])
     setTopIndex(-1)
   }, [exit])
@@ -169,6 +202,19 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
       return
     }
 
+    // ── Ctrl+O: toggle thinking for latest assistant message ─────────────
+    if (key.ctrl && input === 'o') {
+      setMessages(prev => {
+        const lastAssist = [...prev].reverse().findIndex(m => m.role === 'assistant' && m.thinking)
+        if (lastAssist < 0) return prev
+        const idx = prev.length - 1 - lastAssist
+        return prev.map((m, i) =>
+          i === idx ? { ...m, thinkingExpanded: !m.thinkingExpanded } : m,
+        )
+      })
+      return
+    }
+
     // ── Abort ─────────────────────────────────────────────────────────────
     if (key.escape) {
       if (inputValue) { setInputValue(''); setSuggestionIdx(0) }
@@ -206,7 +252,7 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
 
   const cfg = getConfig()
   const backend = cfg.model.startsWith('claude-') ? 'anthropic' : 'local'
-  const scrollIndicator = topIndex >= 0 ? ` [↑ scrolled]` : ''
+  const scrollIndicator = topIndex >= 0 ? ` [↑ scrolled — PgDn/↓ to return]` : ''
 
   const divider = '─'.repeat(Math.max(0, termWidth - 2))
 
@@ -227,11 +273,23 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
         termWidth={termWidth}
       />
 
+      {/* ── Thinking indicator (live preview while model reasons) ─────────── */}
+      {thinking && (
+        <Box flexDirection="column" paddingX={2}>
+          <Text color="magenta" dimColor bold>{'⟳ thinking'}</Text>
+          {thinkingText && (
+            <Text color="gray" dimColor wrap="wrap">
+              {thinkingText.slice(-(termWidth * 2))}
+            </Text>
+          )}
+        </Box>
+      )}
+
       {/* ── Streaming preview ────────────────────── */}
       {streaming && currentResponse && (
-        <Box paddingX={2}>
-          <Text color="cyan" bold>{'Assistant  '}</Text>
-          <Text color="gray" dimColor wrap="wrap">{currentResponse.slice(-180)}</Text>
+        <Box flexDirection="column" paddingX={2}>
+          <Text color="cyan" bold>{'Assistant'}</Text>
+          <Text color="gray" dimColor wrap="wrap">{currentResponse.slice(-(termWidth * 2))}</Text>
         </Box>
       )}
 
@@ -245,6 +303,7 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
         suggestions={suggestions}
         suggestionIndex={clampedSugIdx}
         disabled={streaming}
+        hasThinking={messages.some(m => m.role === 'assistant' && Boolean(m.thinking))}
       />
     </Box>
   )

@@ -29,6 +29,11 @@ export function buildProjectSystemPromptAddition(): string {
     `Working directory root: ${info.gitRoot}`,
   ]
 
+  if (info.claudeMd) {
+    lines.push('\n### Project Instructions (CLAUDE.md)\n')
+    lines.push(info.claudeMd)
+  }
+
   if (info.chatMd) {
     lines.push('\n### Project Memory (CHAT.md)\n')
     lines.push(info.chatMd)
