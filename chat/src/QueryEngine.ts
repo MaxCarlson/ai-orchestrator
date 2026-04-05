@@ -8,6 +8,14 @@ import { ClearCommand } from './commands/clear.js'
 import { ConfigCommand } from './commands/config.js'
 import { SessionCommand } from './commands/session.js'
 import { MemoryCommand } from './commands/memory.js'
+import { ModelCommand } from './commands/model.js'
+import { ContextCommand } from './commands/context_cmd.js'
+import { CostCommand } from './commands/cost.js'
+import { CompactCommand } from './commands/compact.js'
+import { ProjectCommand } from './commands/project_cmd.js'
+import { EmbeddingsCommand } from './commands/embeddings.js'
+import { ToolsCommand } from './commands/tools_cmd.js'
+import { resetTokenUsage } from './session/tokenTracker.js'
 import { SessionStore } from './session/store.js'
 import { BashTool } from './tools/BashTool.js'
 import { FileReadTool } from './tools/FileReadTool.js'
@@ -55,6 +63,13 @@ export class QueryEngine {
     this.commandRegistry.register(new ConfigCommand())
     this.commandRegistry.register(new SessionCommand())
     this.commandRegistry.register(new MemoryCommand())
+    this.commandRegistry.register(new ModelCommand())
+    this.commandRegistry.register(new ContextCommand())
+    this.commandRegistry.register(new CostCommand())
+    this.commandRegistry.register(new CompactCommand())
+    this.commandRegistry.register(new ProjectCommand())
+    this.commandRegistry.register(new EmbeddingsCommand())
+    this.commandRegistry.register(new ToolsCommand())
   }
 
   async initialize(): Promise<void> {
@@ -70,7 +85,7 @@ export class QueryEngine {
     if (parsed) {
       let compactRequested = false
       const result = await this.commandRegistry.dispatch(parsed.name, parsed.args, {
-        clearMessages: () => { this.messages = [] },
+        clearMessages: () => { this.messages = []; resetTokenUsage() },
         getMessages: () => this.messages,
         workingDir: this.workingDir,
         requestCompact: () => { compactRequested = true },
