@@ -1,5 +1,7 @@
 import { queryLoop } from './query.js'
 import { getConfig } from './commands/config.js'
+import { detectProject } from './project/detector.js'
+import { setProjectContext, buildProjectSystemPromptAddition } from './project/context.js'
 import { parseSlashCommand, CommandRegistry } from './commands/index.js'
 import { HelpCommand } from './commands/help.js'
 import { ClearCommand } from './commands/clear.js'
@@ -55,6 +57,13 @@ export class QueryEngine {
     this.commandRegistry.register(new MemoryCommand())
   }
 
+  async initialize(): Promise<void> {
+    const info = await detectProject(this.workingDir)
+    if (info) {
+      setProjectContext({ info })
+    }
+  }
+
   async* submit(input: string, abortSignal: AbortSignal): AsyncGenerator<EngineEvent> {
     const parsed = parseSlashCommand(input)
 
@@ -90,11 +99,12 @@ export class QueryEngine {
     this.messages.push(userMsg)
 
     const cfg = getConfig()
+    const projectAddition = buildProjectSystemPromptAddition()
 
     for await (const event of queryLoop(this.messages, this.tools, {
       model: cfg.model,
       maxTurns: cfg.maxTurns,
-      systemPrompt: cfg.systemPrompt,
+      systemPrompt: cfg.systemPrompt + projectAddition,
       abortSignal,
       workingDir: this.workingDir,
     })) {
