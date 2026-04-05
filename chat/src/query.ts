@@ -49,6 +49,7 @@ export async function* queryLoop(
     }
 
     const pendingToolUse: Array<{ id: string; name: string; inputJson: string }> = []
+    let currentBlockIsToolUse = false
 
     for await (const event of stream) {
       if (abortSignal.aborted) {
@@ -57,6 +58,7 @@ export async function* queryLoop(
       }
 
       if (event.type === 'content_block_start') {
+        currentBlockIsToolUse = event.content_block.type === 'tool_use'
         if (event.content_block.type === 'tool_use') {
           pendingToolUse.push({
             id: event.content_block.id,
@@ -78,7 +80,10 @@ export async function* queryLoop(
           yield { type: 'tool_use_delta', toolInput: event.delta.partial_json }
         }
       } else if (event.type === 'content_block_stop') {
-        yield { type: 'tool_use_end' }
+        if (currentBlockIsToolUse) {
+          yield { type: 'tool_use_end' }
+        }
+        currentBlockIsToolUse = false
       } else if (event.type === 'message_stop') {
         yield { type: 'message_stop' }
       }
