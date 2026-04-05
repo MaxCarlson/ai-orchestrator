@@ -78,11 +78,17 @@ if (values.serve) {
   const { QueryEngine } = await import('./QueryEngine.js')
 
   const engine = new QueryEngine(workingDir)
-  await engine.initialize()
+  const initMessages: string[] = []
+  for await (const event of engine.initialize()) {
+    if (event.type === 'status') {
+      process.stderr.write(event.text + '\n')
+      initMessages.push(event.text)
+    }
+  }
 
   const replProps = initialMessage !== undefined
-    ? { workingDir, engine, initialMessage }
-    : { workingDir, engine }
+    ? { workingDir, engine, initialMessage, initMessages }
+    : { workingDir, engine, initMessages }
 
   const { waitUntilExit } = render(
     React.createElement(REPL, replProps)

@@ -12,9 +12,10 @@ interface REPLProps {
   workingDir: string
   engine?: QueryEngine
   initialMessage?: string
+  initMessages?: string[]
 }
 
-export function REPL({ workingDir, engine: engineProp, initialMessage }: REPLProps) {
+export function REPL({ workingDir, engine: engineProp, initialMessage, initMessages = [] }: REPLProps) {
   const { exit } = useApp()
   const { stdout } = useStdout()
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -23,6 +24,7 @@ export function REPL({ workingDir, engine: engineProp, initialMessage }: REPLPro
       content: 'Chat agent ready. Type /help for available commands. Ctrl+C to exit.',
       timestamp: Date.now(),
     },
+    ...initMessages.map(text => ({ role: 'system' as const, content: text, timestamp: Date.now() })),
   ])
   const [streaming, setStreaming] = useState(false)
   const [activeTools, setActiveTools] = useState<ActiveTool[]>([])

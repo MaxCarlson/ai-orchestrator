@@ -1,4 +1,5 @@
 import type { SlashCommand, CommandContext, CommandResult } from '../types/command.js'
+import { defaultLmStudioUrl } from '../backends/lmstudio.js'
 
 export interface ChatConfig {
   model: string
@@ -12,7 +13,7 @@ let _config: ChatConfig = {
   model: process.env['AI_MODEL'] ?? process.env['ANTHROPIC_MODEL'] ?? 'qwen3-30b-a3b-abliterated',
   systemPrompt: process.env['CHAT_SYSTEM_PROMPT'] ?? 'You are a helpful coding assistant.',
   maxTurns: 20,
-  localUrl: process.env['LM_STUDIO_URL'] ?? 'http://localhost:1234/v1',
+  localUrl: defaultLmStudioUrl(),
 }
 
 export function getConfig(): ChatConfig { return { ..._config } }

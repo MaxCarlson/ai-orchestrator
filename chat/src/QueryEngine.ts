@@ -75,10 +75,18 @@ export class QueryEngine {
     this.commandRegistry.register(new ToolsCommand())
   }
 
-  async initialize(): Promise<void> {
+  async* initialize(): AsyncGenerator<EngineEvent> {
     const info = await detectProject(this.workingDir)
     if (info) {
       setProjectContext({ info })
+    }
+
+    // Auto-start LM Studio server and pre-load local model at startup
+    const cfg = getConfig()
+    if (!cfg.model.startsWith('claude-')) {
+      for await (const status of ensureLmStudio(cfg.model, cfg.localUrl)) {
+        yield { type: 'status', text: status }
+      }
     }
   }
 
@@ -121,18 +129,6 @@ export class QueryEngine {
     const projectAddition = buildProjectSystemPromptAddition()
 
     const isLocal = !model.startsWith('claude-')
-
-    if (isLocal) {
-      // Auto-start LM Studio server and load the model if needed.
-      for await (const status of ensureLmStudio(model, localUrl)) {
-        yield { type: 'status', text: status }
-      }
-      // ensureLmStudio returns false via the generator return value, but we detect
-      // failure by checking if the server is now reachable after the loop.
-      const ready = await fetch(`${localUrl}/models`, { signal: AbortSignal.timeout(2000) })
-        .then(r => r.ok).catch(() => false)
-      if (!ready) return
-    }
 
     const loop = isLocal
       ? queryLoopOpenAI(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir, localUrl })
