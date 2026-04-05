@@ -1,4 +1,5 @@
 import { queryLoop } from './query.js'
+import { queryLoopOpenAI } from './backends/openai_compat.js'
 import { getConfig } from './commands/config.js'
 import { detectProject } from './project/detector.js'
 import { setProjectContext, buildProjectSystemPromptAddition } from './project/context.js'
@@ -114,15 +115,14 @@ export class QueryEngine {
     this.messages.push(userMsg)
 
     const cfg = getConfig()
+    const { model, maxTurns, systemPrompt, localUrl } = cfg
     const projectAddition = buildProjectSystemPromptAddition()
 
-    for await (const event of queryLoop(this.messages, this.tools, {
-      model: cfg.model,
-      maxTurns: cfg.maxTurns,
-      systemPrompt: cfg.systemPrompt + projectAddition,
-      abortSignal,
-      workingDir: this.workingDir,
-    })) {
+    const loop = model.startsWith('claude-')
+      ? queryLoop(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir })
+      : queryLoopOpenAI(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir, localUrl })
+
+    for await (const event of loop) {
       yield event
     }
 

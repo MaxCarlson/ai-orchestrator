@@ -1,15 +1,18 @@
 import type { SlashCommand, CommandContext, CommandResult } from '../types/command.js'
 
-interface ChatConfig {
+export interface ChatConfig {
   model: string
   systemPrompt: string
   maxTurns: number
+  localUrl: string
 }
 
 let _config: ChatConfig = {
-  model: process.env['ANTHROPIC_MODEL'] ?? 'claude-sonnet-4-6',
+  // Local LM Studio is the primary backend. To use Claude: ai -m claude-sonnet-4-6
+  model: process.env['AI_MODEL'] ?? process.env['ANTHROPIC_MODEL'] ?? 'gemma-4-27b-it',
   systemPrompt: process.env['CHAT_SYSTEM_PROMPT'] ?? 'You are a helpful coding assistant.',
   maxTurns: 20,
+  localUrl: process.env['LM_STUDIO_URL'] ?? 'http://localhost:1234/v1',
 }
 
 export function getConfig(): ChatConfig { return { ..._config } }
@@ -30,16 +33,32 @@ export class ConfigCommand implements SlashCommand {
           'Current config:',
           `  model        = ${cfg.model}`,
           `  maxTurns     = ${cfg.maxTurns}`,
-          `  systemPrompt = ${cfg.systemPrompt}`,
+          `  localUrl     = ${cfg.localUrl}`,
+          `  systemPrompt = ${cfg.systemPrompt.slice(0, 60)}${cfg.systemPrompt.length > 60 ? '...' : ''}`,
+          '',
+          'Usage: /config <key> <value>',
+          'Keys: model, maxTurns, localUrl, systemPrompt',
         ].join('\n'),
       }
     }
 
-    const [key, ...rest] = parts
-    const value = rest.join(' ')
-    if (key === 'model')       { setConfig({ model: value }); return { type: 'output', text: `model set to ${value}` } }
-    if (key === 'maxTurns')    { setConfig({ maxTurns: parseInt(value, 10) }); return { type: 'output', text: `maxTurns set to ${value}` } }
-    if (key === 'systemPrompt'){ setConfig({ systemPrompt: value }); return { type: 'output', text: 'systemPrompt updated' } }
-    return { type: 'output', text: `Unknown config key: ${key}` }
+    const key = parts[0] as keyof ChatConfig
+    const value = parts.slice(1).join(' ')
+
+    if (!value) {
+      return { type: 'output', text: `${key} = ${String(cfg[key])}` }
+    }
+
+    if (key === 'maxTurns') {
+      const n = parseInt(value, 10)
+      if (isNaN(n) || n < 1) return { type: 'output', text: 'maxTurns must be a positive integer' }
+      setConfig({ maxTurns: n })
+    } else if (key === 'model' || key === 'systemPrompt' || key === 'localUrl') {
+      setConfig({ [key]: value })
+    } else {
+      return { type: 'output', text: `Unknown config key: ${key}` }
+    }
+
+    return { type: 'output', text: `Set ${key} = ${value}` }
   }
 }

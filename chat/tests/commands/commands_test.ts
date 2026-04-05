@@ -2,8 +2,18 @@ import { describe, it, expect } from 'bun:test'
 import { parseSlashCommand, CommandRegistry } from '../../src/commands/index.js'
 import { HelpCommand } from '../../src/commands/help.js'
 import { ClearCommand } from '../../src/commands/clear.js'
+import { getConfig, setConfig } from '../../src/commands/config.js'
 
 const ctx = { clearMessages: () => {}, getMessages: () => [], workingDir: '/tmp' }
+
+describe('config', () => {
+  it('getConfig includes localUrl defaulting to localhost:1234 and local model as default', () => {
+    const cfg = getConfig()
+    expect(cfg.localUrl).toContain('1234')
+    // Default model is local, not Claude
+    expect(cfg.model).not.toContain('claude')
+  })
+})
 
 describe('parseSlashCommand', () => {
   it('detects a slash command', () => {

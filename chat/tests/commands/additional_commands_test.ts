@@ -18,8 +18,8 @@ describe('ModelCommand', () => {
   it('sets model when given a name', async () => {
     await new ModelCommand().execute('claude-haiku-4-5-20251001', ctx)
     expect(getConfig().model).toBe('claude-haiku-4-5-20251001')
-    // Reset
-    setConfig({ model: 'claude-sonnet-4-6' })
+    // Reset to default local model
+    setConfig({ model: 'gemma-4-27b-it' })
   })
 })
 
