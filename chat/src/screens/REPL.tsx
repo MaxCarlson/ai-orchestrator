@@ -15,29 +15,38 @@ interface REPLProps {
   initMessages?: string[]
 }
 
+const HEADER_LINES  = 2   // model line + divider
+const INPUT_LINES   = 4   // input row + hint + padding
+const TOOL_LINES    = 2   // max tool progress rows
+const STREAMING_LINES = 2 // streaming response preview
+
 export function REPL({ workingDir, engine: engineProp, initialMessage, initMessages = [] }: REPLProps) {
   const { exit } = useApp()
   const { stdout } = useStdout()
+
   const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: 'system',
-      content: 'Chat agent ready. Type /help for available commands. Ctrl+C to exit.',
-      timestamp: Date.now(),
-    },
     ...initMessages.map(text => ({ role: 'system' as const, content: text, timestamp: Date.now() })),
   ])
   const [streaming, setStreaming] = useState(false)
   const [activeTools, setActiveTools] = useState<ActiveTool[]>([])
   const [currentResponse, setCurrentResponse] = useState('')
+  const [scrollOffset, setScrollOffset] = useState(0)  // 0 = pinned to bottom
+
   const engineRef = useRef<QueryEngine>(engineProp ?? new QueryEngine(workingDir))
-  const abortRef = useRef<AbortController | null>(null)
+  const abortRef  = useRef<AbortController | null>(null)
+
+  const terminalHeight = stdout.rows ?? 24
+  const toolLines = Math.min(activeTools.filter(t => !t.done).length, TOOL_LINES)
+  const streamLines = (streaming && currentResponse) ? STREAMING_LINES : 0
+  const viewportHeight = Math.max(4, terminalHeight - HEADER_LINES - INPUT_LINES - toolLines - streamLines)
+
+  const scrollPageSize = Math.max(1, Math.floor(viewportHeight * 0.8))
 
   const handleSubmit = useCallback(async (input: string) => {
-    if (input === '/exit' || input === '/quit') {
-      exit()
-      return
-    }
+    if (input === '/exit' || input === '/quit') { exit(); return }
 
+    // Auto-scroll to bottom on new message
+    setScrollOffset(0)
     setMessages(prev => [...prev, { role: 'user', content: input, timestamp: Date.now() }])
     setStreaming(true)
     setCurrentResponse('')
@@ -85,6 +94,7 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
           setMessages(prev => [...prev, { role: 'assistant', content: responseText, timestamp: Date.now() }])
           responseText = ''
           setCurrentResponse('')
+          setScrollOffset(0)
         }
       }
 
@@ -99,36 +109,58 @@ export function REPL({ workingDir, engine: engineProp, initialMessage, initMessa
     setActiveTools([])
   }, [exit])
 
-  // Auto-submit initial message if provided
   useEffect(() => {
-    if (initialMessage) {
-      void handleSubmit(initialMessage)
-    }
+    if (initialMessage) void handleSubmit(initialMessage)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const terminalHeight = stdout.rows ?? 24
-  // Reserve lines for: header (3) + streaming (2) + tool progress (1) + input (3)
-  const listHeight = Math.max(6, terminalHeight - 9)
-  const model = getConfig().model
+  const cfg = getConfig()
+  const isLocal = !cfg.model.startsWith('claude-')
+  const backend = isLocal ? 'local' : 'anthropic'
+  const modelLabel = `${cfg.model}  ·  ${backend}`
 
   return (
     <Box flexDirection="column" height={terminalHeight}>
-      <Box borderStyle="double" borderColor="blue" paddingX={2}>
-        <Text bold color="blue">{'AI Orchestrator — Chat Agent'}</Text>
+      {/* ── Header ─────────────────────────────────────────── */}
+      <Box paddingX={2} paddingY={0}>
+        <Text color="cyan" bold>aioc  </Text>
+        <Text color="gray" dimColor>{modelLabel}</Text>
+      </Box>
+      <Box paddingX={1}>
+        <Text color="gray" dimColor>{'─'.repeat(Math.max(0, (stdout.columns ?? 80) - 2))}</Text>
       </Box>
 
-      <MessageList messages={messages} maxHeight={listHeight} />
+      {/* ── Messages (scrollable viewport) ─────────────────── */}
+      <MessageList
+        messages={messages}
+        scrollOffset={scrollOffset}
+        viewportHeight={viewportHeight}
+      />
 
+      {/* ── Streaming response preview ──────────────────────── */}
       {streaming && currentResponse && (
-        <Box paddingX={1}>
-          <Text color="blue" bold>{model + '  '}</Text>
-          <Text wrap="wrap">{currentResponse}</Text>
+        <Box paddingX={2}>
+          <Text color="cyan" bold>{'Assistant  '}</Text>
+          <Text color="gray" dimColor wrap="wrap">
+            {currentResponse.slice(-200)}
+          </Text>
         </Box>
       )}
 
+      {/* ── Tool progress ───────────────────────────────────── */}
       <ToolProgress activeTools={activeTools} />
 
-      <InputBar onSubmit={handleSubmit} disabled={streaming} />
+      {/* ── Divider + input ─────────────────────────────────── */}
+      <Box paddingX={1}>
+        <Text color="gray" dimColor>{'─'.repeat(Math.max(0, (stdout.columns ?? 80) - 2))}</Text>
+      </Box>
+      <InputBar
+        onSubmit={handleSubmit}
+        disabled={streaming}
+        onScrollUp={() => setScrollOffset(o => o + 1)}
+        onScrollDown={() => setScrollOffset(o => Math.max(0, o - 1))}
+        onScrollPageUp={() => setScrollOffset(o => o + scrollPageSize)}
+        onScrollPageDown={() => setScrollOffset(o => Math.max(0, o - scrollPageSize))}
+      />
     </Box>
   )
 }
