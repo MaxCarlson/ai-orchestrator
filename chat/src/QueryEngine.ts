@@ -118,9 +118,26 @@ export class QueryEngine {
     const { model, maxTurns, systemPrompt, localUrl } = cfg
     const projectAddition = buildProjectSystemPromptAddition()
 
-    const loop = model.startsWith('claude-')
-      ? queryLoop(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir })
-      : queryLoopOpenAI(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir, localUrl })
+    const isLocal = !model.startsWith('claude-')
+
+    if (isLocal) {
+      // Quick health check before starting the loop — gives a clear error instead of
+      // a cryptic "Connection error." if LM Studio isn't running.
+      const reachable = await fetch(`${localUrl}/models`, { signal: AbortSignal.timeout(2000) })
+        .then(r => r.ok)
+        .catch(() => false)
+      if (!reachable) {
+        yield {
+          type: 'error',
+          error: `Cannot reach LM Studio at ${localUrl}.\n\nTo fix:\n  1. Open LM Studio (Windows app)\n  2. Load a model (e.g. ${model})\n  3. Go to Local Server → Start Server (port 1234)\n\nOr switch to Claude: /model claude-sonnet-4-6`,
+        }
+        return
+      }
+    }
+
+    const loop = isLocal
+      ? queryLoopOpenAI(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir, localUrl })
+      : queryLoop(this.messages, this.tools, { model, maxTurns, systemPrompt: systemPrompt + projectAddition, abortSignal, workingDir: this.workingDir })
 
     for await (const event of loop) {
       yield event
