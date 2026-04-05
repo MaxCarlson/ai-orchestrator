@@ -89,6 +89,46 @@ def _read_gpu_stats() -> list[dict]:
     return rows
 
 
+def _parse_gpu_inventory_output(output: str) -> list[dict]:
+    rows: list[dict] = []
+    for raw_line in output.strip().splitlines():
+        if not raw_line.strip():
+            continue
+        parts = [part.strip() for part in raw_line.split(",")]
+        if len(parts) < 3:
+            continue
+        index_text, name, mem_total_text = parts[:3]
+        if not index_text.isdigit():
+            continue
+        mem_total_mb = int(mem_total_text) if mem_total_text.isdigit() else None
+        rows.append({
+            "index": int(index_text),
+            "name": name,
+            "memory_total_mb": mem_total_mb,
+        })
+    return rows
+
+
+def _read_gpu_inventory() -> list[dict]:
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    return _parse_gpu_inventory_output(result.stdout)
+
+
 async def _fetch_db_stats() -> Dict[str, Any]:
     cfg = _db_config()
     try:
@@ -431,3 +471,9 @@ async def telemetry():
         "mem_total_mb": mem_total_mb,
         "gpu": _read_gpu_stats(),
     }
+
+
+@router.get("/gpus")
+async def gpu_inventory():
+    """Return discoverable GPU devices for UI selection."""
+    return {"gpus": _read_gpu_inventory()}

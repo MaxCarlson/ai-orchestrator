@@ -110,9 +110,11 @@
                         <form id="manual-task-form">
                             <label>
                                 Project
-                                <input type="text" id="manual-task-project-name" placeholder="Type project name" list="manual-task-project-options" autocomplete="off" required>
-                                <input type="hidden" name="project_id" id="manual-task-project">
-                                <datalist id="manual-task-project-options"></datalist>
+                                <div class="project-combobox">
+                                    <input type="text" id="manual-task-project-name" placeholder="Type project name" autocomplete="off" required>
+                                    <input type="hidden" name="project_id" id="manual-task-project">
+                                    <div id="manual-task-project-options" class="project-dropdown hidden" role="listbox" aria-label="Projects"></div>
+                                </div>
                             </label>
                             <p id="manual-task-project-help" class="microcopy"></p>
                             <input type="text" name="title" placeholder="Task Title" required>
@@ -198,16 +200,9 @@
                         <span class="microcopy">Enter one absolute path per line.</span>
                     </label>
                     <label>
-                        Preferred Model
-                        <select id="tracking-preferred-model"></select>
-                    </label>
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="tracking-gpu-enabled">
-                        Use local GPU for embeddings
-                    </label>
-                    <label id="tracking-gpu-device-row" class="hidden">
-                        GPU Device Identifier
-                        <input type="text" id="tracking-gpu-device" placeholder="e.g. RTX 5090">
+                        Embedding GPU
+                        <select id="tracking-gpu-device"></select>
+                        <span class="microcopy">Defaults to the GPU with the most VRAM.</span>
                     </label>
                     <div class="panel-actions">
                         <button type="button" class="secondary-btn" id="tracking-config-cancel">Cancel</button>

@@ -553,25 +553,22 @@ function refreshTaskProjectOptions() {
 function refreshManualTaskOptions() {
     const hiddenInput = document.getElementById('manual-task-project');
     const nameInput = document.getElementById('manual-task-project-name');
-    const datalist = document.getElementById('manual-task-project-options');
-    if (!hiddenInput || !nameInput || !datalist) return;
+    if (!hiddenInput || !nameInput) return;
     if (!projectsCache.length) {
-        datalist.innerHTML = '';
         nameInput.value = '';
         hiddenInput.value = '';
+        renderManualTaskProjectOptions('');
         return;
     }
     const ordered = [...projectsCache].sort((a, b) => {
         return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
     });
-    datalist.innerHTML = ordered
-        .map(project => `<option value="${project.name}" data-project-id="${project.id}"></option>`)
-        .join('');
     const selected = ordered.find(project => project.id === selectedProject) || ordered[0];
     if (selected) {
         hiddenInput.value = selected.id;
         nameInput.value = selected.name;
     }
+    renderManualTaskProjectOptions(nameInput.value);
 
     const pathsDatalist = document.getElementById('manual-task-paths');
     if (!pathsDatalist) return;
@@ -917,8 +914,8 @@ function renderProjectTrackingBanner() {
         ? new Date(info.embedding_last_indexed).toLocaleString()
         : 'Never';
     const lastIndexedAge = formatTimeSince(info.embedding_last_indexed);
-    const modelLabel = info.embedding_model_id || info.preferred_model_id || 'Default';
-    const gpuLabel = info.gpu_enabled ? `GPU (${info.gpu_device || 'local'})` : 'CPU';
+    const modelLabel = info.embedding_model_id || info.text_embedding_model_id || 'Default';
+    const gpuLabel = `GPU (${info.gpu_device || 'auto'})`;
     const globalStatus = info.global_embedding_status ? info.global_embedding_status.toUpperCase() : 'NOT_TRACKED';
     const globalMode = info.global_embedding_mode ? info.global_embedding_mode.toUpperCase() : 'AUTO';
     const globalLastIndexed = info.global_embedding_last_indexed
@@ -984,14 +981,10 @@ function renderProjectTrackingBanner() {
 
 function initializeTrackingForm() {
     const form = document.getElementById('tracking-config-form');
-    const gpuToggle = document.getElementById('tracking-gpu-enabled');
     const closeBtn = document.getElementById('tracking-config-close');
     const cancelBtn = document.getElementById('tracking-config-cancel');
     if (form) {
         form.addEventListener('submit', handleTrackingFormSubmit);
-    }
-    if (gpuToggle) {
-        gpuToggle.addEventListener('change', (event) => toggleGpuDeviceRow(event.target.checked));
     }
     if (closeBtn) {
         closeBtn.addEventListener('click', hideTrackingConfigPanel);
@@ -1027,7 +1020,69 @@ function initializeEmbeddingsView() {
     }
 }
 
-function showTrackingConfigPanel() {
+async function loadGpuInventory(force = false) {
+    if (availableGpuDevices.length && !force) {
+        return availableGpuDevices;
+    }
+    const response = await fetch('/api/system/gpus');
+    const payload = await response.json();
+    if (!response.ok) {
+        throw new Error(payload.detail || 'Failed to load GPU inventory');
+    }
+    availableGpuDevices = Array.isArray(payload.gpus) ? payload.gpus : [];
+    return availableGpuDevices;
+}
+
+function formatGpuOptionLabel(gpu) {
+    const totalGb = gpu.memory_total_mb ? `${(gpu.memory_total_mb / 1024).toFixed(1)} GB` : 'Unknown VRAM';
+    return `GPU ${gpu.index} · ${gpu.name} · ${totalGb}`;
+}
+
+function defaultGpuSelection(gpus = []) {
+    if (!gpus.length) {
+        return '';
+    }
+    const sorted = [...gpus].sort((a, b) => {
+        const aMem = Number(a.memory_total_mb || 0);
+        const bMem = Number(b.memory_total_mb || 0);
+        if (bMem !== aMem) {
+            return bMem - aMem;
+        }
+        return Number(a.index || 0) - Number(b.index || 0);
+    });
+    const gpu = sorted[0];
+    return formatGpuOptionLabel(gpu);
+}
+
+function populateGpuDeviceSelect(select, selectedValue = '') {
+    if (!select) {
+        return;
+    }
+    if (!availableGpuDevices.length) {
+        select.innerHTML = '<option value="">No GPU detected</option>';
+        select.value = '';
+        select.disabled = true;
+        return;
+    }
+    const ordered = [...availableGpuDevices].sort((a, b) => {
+        const aMem = Number(a.memory_total_mb || 0);
+        const bMem = Number(b.memory_total_mb || 0);
+        if (bMem !== aMem) {
+            return bMem - aMem;
+        }
+        return Number(a.index || 0) - Number(b.index || 0);
+    });
+    select.innerHTML = ordered
+        .map((gpu) => {
+            const value = formatGpuOptionLabel(gpu);
+            return `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
+        })
+        .join('');
+    select.disabled = false;
+    select.value = selectedValue || defaultGpuSelection(ordered);
+}
+
+async function showTrackingConfigPanel() {
     if (!selectedProject) {
         alert('Select a project first.');
         return;
@@ -1039,13 +1094,11 @@ function showTrackingConfigPanel() {
     const panel = document.getElementById('tracking-config-panel');
     const titleEl = document.getElementById('tracking-config-project');
     const repoInput = document.getElementById('tracking-repo-path');
-    const modelSelect = document.getElementById('tracking-preferred-model');
-    const gpuToggle = document.getElementById('tracking-gpu-enabled');
     const gpuDevice = document.getElementById('tracking-gpu-device');
     const info = projectTracking[selectedProject] || {};
     const project = projectsCache.find(p => p.id === selectedProject);
 
-    if (panel && repoInput && modelSelect && gpuToggle && gpuDevice) {
+    if (panel && repoInput && gpuDevice) {
         if (titleEl && project) {
             titleEl.textContent = project.name;
         }
@@ -1053,10 +1106,13 @@ function showTrackingConfigPanel() {
             ? info.repo_paths.join('\n')
             : (info.repo_path || '');
         repoInput.value = repoPaths;
-        populateTrackingModelSelect(modelSelect, info.preferred_model_id || info.embedding_model_id || '');
-        gpuToggle.checked = !!info.gpu_enabled;
-        gpuDevice.value = info.gpu_device || '';
-        toggleGpuDeviceRow(gpuToggle.checked);
+        try {
+            await loadGpuInventory();
+            populateGpuDeviceSelect(gpuDevice, info.gpu_device || '');
+        } catch (error) {
+            gpuDevice.innerHTML = '<option value="">Unable to load GPUs</option>';
+            gpuDevice.disabled = true;
+        }
         panel.classList.remove('hidden');
         repoInput.focus();
     }
@@ -1073,22 +1129,6 @@ function hideTrackingConfigPanel() {
     }
 }
 
-function populateTrackingModelSelect(select, selectedValue = '') {
-    if (!select) return;
-    const options = availableModels.length
-        ? availableModels.map(model => `<option value="${model.id}">${model.label}</option>`).join('')
-        : '<option value="">Default (server)</option>';
-    select.innerHTML = `<option value="">Auto (server default)</option>${options}`;
-    select.value = selectedValue || '';
-}
-
-function toggleGpuDeviceRow(show) {
-    const row = document.getElementById('tracking-gpu-device-row');
-    if (row) {
-        row.classList.toggle('hidden', !show);
-    }
-}
-
 async function handleTrackingFormSubmit(event) {
     event.preventDefault();
     if (!selectedProject) {
@@ -1101,8 +1141,6 @@ async function handleTrackingFormSubmit(event) {
     }
 
     const repoInput = document.getElementById('tracking-repo-path');
-    const modelSelect = document.getElementById('tracking-preferred-model');
-    const gpuToggle = document.getElementById('tracking-gpu-enabled');
     const gpuDevice = document.getElementById('tracking-gpu-device');
     const status = document.getElementById('tracking-config-status');
 
@@ -1124,16 +1162,15 @@ async function handleTrackingFormSubmit(event) {
         repo_path: repoPath,
         repo_paths: repoPaths,
         is_tracked: true,
-        preferred_model_id: modelSelect && modelSelect.value ? modelSelect.value : undefined,
-        gpu_enabled: gpuToggle ? gpuToggle.checked : false,
+        gpu_enabled: true,
         gpu_device: gpuDevice && gpuDevice.value ? gpuDevice.value.trim() : undefined,
     };
 
     logUiEvent('project_tracking_configure', {
         project_id: selectedProject,
         repo_path: repoPath,
-        preferred_model_id: payload.preferred_model_id || null,
         gpu_enabled: payload.gpu_enabled,
+        gpu_device: payload.gpu_device || null,
     });
 
     try {

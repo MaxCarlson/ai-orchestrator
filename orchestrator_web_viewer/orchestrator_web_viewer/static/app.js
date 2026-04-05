@@ -3,6 +3,7 @@
 // State
 let ws = null;
 let currentView = 'dashboard';
+const storedView = window.localStorage.getItem('currentView');
 const storedProjectId = window.localStorage.getItem('selectedProjectId');
 let selectedProject = storedProjectId || null;
 let activeProjectFilter = selectedProject || null;
@@ -15,6 +16,7 @@ let dbTrendsCache = null;
 let currentSystemView = 'stats';
 let projectTracking = {};
 let availableModels = [];
+let availableGpuDevices = [];
 let projectsCache = [];
 let selectedTaskDetails = null;
 let trackingErrorMessage = '';
@@ -64,6 +66,9 @@ const EMBEDDING_MODE_DESCRIPTIONS = {
     text: 'Text-only: documents and prose (BGE base).',
 };
 const GLOBAL_RAG_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
+let manualTaskProjectOptions = [];
+let activeManualTaskProjectIndex = -1;
+const VALID_VIEWS = new Set(['dashboard', 'orchestrator', 'tasks', 'memory', 'embeddings', 'system']);
 
 function logUiEvent(eventType, details = {}) {
     const payload = {
@@ -92,6 +97,15 @@ function normalizeErrorDetail(detail) {
     } catch (error) {
         return String(detail);
     }
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
 }
 
 function normalizeTaskStatusValue(status) {
@@ -295,6 +309,10 @@ document.addEventListener('DOMContentLoaded', () => {
     startSystemMeter();
     checkServiceAvailability();
 
+    if (storedView && VALID_VIEWS.has(storedView) && storedView !== 'dashboard') {
+        switchView(storedView, 'restore');
+    }
+
     // Refresh data every 5 seconds
     setInterval(refreshCurrentView, 5000);
 });
@@ -327,6 +345,7 @@ function switchView(view, reason = 'user') {
     });
 
     currentView = view;
+    window.localStorage.setItem('currentView', view);
     logUiEvent('view_switch', { from: previousView, to: view, reason });
 
     if (view !== 'tasks') {
@@ -470,14 +489,39 @@ function handleWebSocketMessage(message) {
 // Dashboard
 async function loadDashboard() {
     try {
-        const stats = await fetch('/api/orchestrator/stats').then(r => r.json());
+        const [stats, tasks] = await Promise.all([
+            fetch('/api/orchestrator/stats').then(r => r.json()),
+            fetch('/api/tasks?limit=8').then(r => r.json()),
+        ]);
 
         document.getElementById('stat-workers').textContent = stats.active_workers || 0;
         document.getElementById('stat-queued').textContent = stats.queued || 0;
         document.getElementById('stat-completed').textContent = stats.completed || 0;
         document.getElementById('stat-failed').textContent = stats.failed || 0;
+
+        const activityFeed = document.getElementById('activity-feed');
+        if (activityFeed) {
+            if (!Array.isArray(tasks) || !tasks.length) {
+                activityFeed.innerHTML = '<div class="activity-item">No recent task activity.</div>';
+            } else {
+                activityFeed.innerHTML = tasks.map((task) => `
+                    <div class="activity-item">
+                        <div><strong>${escapeHtml(task.title || 'Untitled task')}</strong></div>
+                        <div class="microcopy">
+                            ${escapeHtml(getProjectName(task.project_id))} ·
+                            ${escapeHtml(normalizeTaskStatusValue(task.status))} ·
+                            ${escapeHtml(formatDate(task.modified_at || task.created_at))}
+                        </div>
+                    </div>
+                `).join('');
+            }
+        }
     } catch (error) {
         console.error('Error loading dashboard:', error);
+        const activityFeed = document.getElementById('activity-feed');
+        if (activityFeed) {
+            activityFeed.innerHTML = '<div class="activity-item">Failed to load recent activity.</div>';
+        }
     }
 }
 
@@ -504,12 +548,36 @@ function setupManualTaskForm() {
     const form = document.getElementById('manual-task-form');
     const projectNameInput = document.getElementById('manual-task-project-name');
     const workingDirInput = document.getElementById('manual-task-working-dir');
+    const projectOptions = document.getElementById('manual-task-project-options');
     if (form) {
         form.addEventListener('submit', submitManualTask);
     }
     if (projectNameInput) {
-        projectNameInput.addEventListener('input', syncManualTaskProjectSelection);
-        projectNameInput.addEventListener('change', syncManualTaskProjectSelection);
+        projectNameInput.addEventListener('focus', () => renderManualTaskProjectOptions(projectNameInput.value));
+        projectNameInput.addEventListener('input', () => {
+            const hiddenInput = document.getElementById('manual-task-project');
+            if (hiddenInput) hiddenInput.value = '';
+            activeManualTaskProjectIndex = -1;
+            syncManualTaskProjectSelection();
+            renderManualTaskProjectOptions(projectNameInput.value);
+        });
+        projectNameInput.addEventListener('keydown', handleManualTaskProjectKeydown);
+        projectNameInput.addEventListener('blur', () => {
+            window.setTimeout(() => {
+                projectOptions?.classList.add('hidden');
+            }, 120);
+        });
+    }
+    if (projectOptions) {
+        projectOptions.addEventListener('mousedown', (event) => {
+            const option = event.target.closest('.project-option');
+            if (!option) return;
+            event.preventDefault();
+            const selected = projectsCache.find((project) => project.id === option.dataset.projectId);
+            if (selected) {
+                chooseManualTaskProject(selected);
+            }
+        });
     }
     if (workingDirInput) {
         workingDirInput.addEventListener('input', () => {
@@ -801,10 +869,6 @@ async function loadModelControls() {
                 ? `Selected local model: ${activeModel.label}`
                 : `Selected API model: ${activeModel.label}`;
         }
-        populateTrackingModelSelect(
-            document.getElementById('tracking-preferred-model'),
-            undefined
-        );
     } catch (error) {
         console.error('Error loading models:', error);
         if (status) {
@@ -874,6 +938,134 @@ function findProjectByName(name) {
     return projectsCache.find((project) => (project.name || '').trim().toLowerCase() === target) || null;
 }
 
+function scoreProjectMatch(projectName, query) {
+    const source = (projectName || '').trim().toLowerCase();
+    const target = (query || '').trim().toLowerCase();
+    if (!target) {
+        return source ? 1 : 0;
+    }
+    if (!source) {
+        return 0;
+    }
+    if (source === target) {
+        return 1000;
+    }
+    if (source.startsWith(target)) {
+        return 700 - (source.length - target.length);
+    }
+    if (source.includes(target)) {
+        return 500 - source.indexOf(target);
+    }
+    let score = 0;
+    let cursor = 0;
+    for (const char of target) {
+        const index = source.indexOf(char, cursor);
+        if (index === -1) {
+            return 0;
+        }
+        score += 8;
+        if (index === cursor) {
+            score += 4;
+        }
+        cursor = index + 1;
+    }
+    return score;
+}
+
+function getFilteredManualTaskProjects(query = '') {
+    return [...projectsCache]
+        .map((project) => ({ project, score: scoreProjectMatch(project.name, query) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => {
+            if (b.score !== a.score) {
+                return b.score - a.score;
+            }
+            return (a.project.name || '').localeCompare(b.project.name || '', undefined, { sensitivity: 'base' });
+        })
+        .map((entry) => entry.project);
+}
+
+function renderManualTaskProjectOptions(query = '') {
+    const container = document.getElementById('manual-task-project-options');
+    if (!container) {
+        return;
+    }
+    manualTaskProjectOptions = getFilteredManualTaskProjects(query);
+    if (!manualTaskProjectOptions.length) {
+        container.innerHTML = '<div class="project-option-empty">No matching projects.</div>';
+        container.classList.remove('hidden');
+        activeManualTaskProjectIndex = -1;
+        return;
+    }
+    if (activeManualTaskProjectIndex >= manualTaskProjectOptions.length) {
+        activeManualTaskProjectIndex = 0;
+    }
+    container.innerHTML = manualTaskProjectOptions.map((project, index) => {
+        const tracking = projectTracking[project.id] || {};
+        const repoPath = tracking.repo_path || (tracking.repo_paths || [])[0] || 'No tracked repo path';
+        return `
+            <div class="project-option ${index === activeManualTaskProjectIndex ? 'active' : ''}" data-project-id="${project.id}" role="option" aria-selected="${index === activeManualTaskProjectIndex}">
+                <div class="project-option-name">${escapeHtml(project.name)}</div>
+                <div class="project-option-meta">${escapeHtml(repoPath)}</div>
+            </div>
+        `;
+    }).join('');
+    container.classList.remove('hidden');
+}
+
+function chooseManualTaskProject(project) {
+    const nameInput = document.getElementById('manual-task-project-name');
+    const hiddenInput = document.getElementById('manual-task-project');
+    const options = document.getElementById('manual-task-project-options');
+    if (!nameInput || !hiddenInput) {
+        return;
+    }
+    nameInput.value = project.name || '';
+    hiddenInput.value = project.id || '';
+    activeManualTaskProjectIndex = manualTaskProjectOptions.findIndex((entry) => entry.id === project.id);
+    syncManualTaskProjectSelection();
+    options?.classList.add('hidden');
+}
+
+function handleManualTaskProjectKeydown(event) {
+    const options = document.getElementById('manual-task-project-options');
+    if (!options || options.classList.contains('hidden')) {
+        if (event.key === 'ArrowDown') {
+            renderManualTaskProjectOptions(event.target.value);
+            event.preventDefault();
+        }
+        return;
+    }
+    if (event.key === 'ArrowDown') {
+        activeManualTaskProjectIndex = Math.min(activeManualTaskProjectIndex + 1, manualTaskProjectOptions.length - 1);
+        renderManualTaskProjectOptions(event.target.value);
+        event.preventDefault();
+        return;
+    }
+    if (event.key === 'ArrowUp') {
+        activeManualTaskProjectIndex = Math.max(activeManualTaskProjectIndex - 1, 0);
+        renderManualTaskProjectOptions(event.target.value);
+        event.preventDefault();
+        return;
+    }
+    if (event.key === 'Enter') {
+        if (activeManualTaskProjectIndex >= 0 && manualTaskProjectOptions[activeManualTaskProjectIndex]) {
+            chooseManualTaskProject(manualTaskProjectOptions[activeManualTaskProjectIndex]);
+            event.preventDefault();
+            return;
+        }
+        const exactMatch = findProjectByName(event.target.value);
+        if (exactMatch) {
+            chooseManualTaskProject(exactMatch);
+            event.preventDefault();
+        }
+        return;
+    }
+    if (event.key === 'Escape') {
+        options.classList.add('hidden');
+    }
+}
+
 function syncManualTaskProjectSelection() {
     const nameInput = document.getElementById('manual-task-project-name');
     const hiddenInput = document.getElementById('manual-task-project');
@@ -883,10 +1075,12 @@ function syncManualTaskProjectSelection() {
         return;
     }
 
-    const matchedProject = findProjectByName(nameInput.value);
+    const matchedProject = projectsCache.find((project) => project.id === hiddenInput.value) || findProjectByName(nameInput.value);
     if (!matchedProject) {
         hiddenInput.value = '';
-        workingDirInput.value = '';
+        if (workingDirInput.dataset.autoFilled === 'true') {
+            workingDirInput.value = '';
+        }
         if (helpEl) {
             helpEl.textContent = nameInput.value.trim() ? 'Choose a project from the known project list.' : '';
         }
