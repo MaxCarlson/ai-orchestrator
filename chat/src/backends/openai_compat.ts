@@ -123,12 +123,13 @@ export async function* queryLoopOpenAI(
 
     let responseText = ''
     const toolCallMap = new Map<number, { id: string; name: string; argumentsJson: string }>()
+    let lastUsage: { prompt_tokens: number; completion_tokens: number } | null = null
 
     for await (const chunk of stream) {
       if (abortSignal.aborted) { yield { type: 'error', error: 'Aborted' }; return }
 
       if (chunk.usage) {
-        recordTokenUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens, 0)
+        lastUsage = { prompt_tokens: chunk.usage.prompt_tokens, completion_tokens: chunk.usage.completion_tokens }
       }
 
       const choice = chunk.choices[0]
@@ -158,25 +159,28 @@ export async function* queryLoopOpenAI(
           }
         }
       }
-
-      const finishReason = choice.finish_reason
-      if (finishReason === 'tool_calls' || finishReason === 'stop') {
-        if (toolCallMap.size > 0) yield { type: 'tool_use_end' }
-        yield { type: 'message_stop' }
-      }
     }
 
+    if (lastUsage) {
+      recordTokenUsage(lastUsage.prompt_tokens, lastUsage.completion_tokens, 0)
+    }
+
+    for (const [,] of toolCallMap) {
+      yield { type: 'tool_use_end' }
+    }
+    yield { type: 'message_stop' }
+
     // Assemble assistant message in unified ContentBlock format
-    const assistantContent: ContentBlock[] = []
+    const assistantContent: Array<{ type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: unknown }> = []
     if (responseText) {
-      assistantContent.push({ type: 'text', text: responseText } as unknown as ContentBlock)
+      assistantContent.push({ type: 'text', text: responseText })
     }
     for (const [, tc] of toolCallMap) {
       let input: Record<string, unknown> = {}
       try { input = JSON.parse(tc.argumentsJson || '{}') as Record<string, unknown> } catch { /* empty */ }
       assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input })
     }
-    messages.push({ role: 'assistant', content: assistantContent })
+    messages.push({ role: 'assistant', content: assistantContent as unknown as ContentBlock[] })
 
     if (toolCallMap.size === 0) break
 
