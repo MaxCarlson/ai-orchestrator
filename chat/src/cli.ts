@@ -32,7 +32,7 @@ ai — AI Orchestrator Chat Agent v${VERSION}
 Usage: ai [options] [initial message]
 
 Options:
-  -m, --model <name>      Model (default: claude-sonnet-4-6)
+  -m, --model <name>      Model (default: gemma-4-27b-it for local, or AI_MODEL env)
       --no-project        Disable project auto-detection
       --no-embeddings     Disable semantic context injection
   -d, --dir <path>        Working directory (default: cwd)
@@ -48,8 +48,9 @@ Slash commands (in TUI):
   /compact  /session  /memory  /project  /embeddings  /tools
 
 Environment:
-  ANTHROPIC_API_KEY       Required — your Anthropic API key
-  ANTHROPIC_MODEL         Default model override
+  ANTHROPIC_API_KEY       Required only for Anthropic (claude-*) models
+  AI_MODEL                Override default model (takes highest precedence)
+  ANTHROPIC_MODEL         Override default model (Anthropic models)
   CHAT_SYSTEM_PROMPT      Default system prompt
   LM_STUDIO_URL           Local model endpoint (default: http://localhost:1234/v1)
   `)
