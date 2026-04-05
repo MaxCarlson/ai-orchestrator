@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "src/index.ts",
+  "engines": { "bun": ">=1.1.0" },
   "scripts": {
     "tui": "bun run src/cli.ts",
     "serve": "bun run src/cli.ts --serve",
