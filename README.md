@@ -218,9 +218,55 @@ The agent has access to these tools automatically:
 
 Conversations are saved to `~/.ai-orchestrator/sessions/` as JSON. Use `/session list` to see past sessions. Full session resume is planned for a future release.
 
-### Local GPU Models (Planned)
+### Local GPU Models (LM Studio + RTX 5090)
 
-The `ai` command currently routes all requests to the Anthropic API. Support for local LM Studio models (running on the RTX 5090 at port 1234) is planned — the `/model` command will accept local model names (e.g., `/model qwen2.5-coder`) and route them to `http://localhost:1234` via the OpenAI-compatible API. For now, use `ai -m claude-haiku-4-5-20251001` for the fastest/cheapest Anthropic option.
+The `ai` command auto-routes by model name: any model NOT starting with `claude-` is sent to LM Studio's OpenAI-compatible API.
+
+**Prerequisites:**
+1. Install [LM Studio](https://lmstudio.ai) (≥0.3)
+2. Load a model (see recommended stack below)
+3. Enable the local server in LM Studio: **Local Server → Start Server** (default port 1234)
+
+**Usage:**
+
+```bash
+# Use a local model (LM Studio must be running with model loaded)
+ai -m gemma-4-27b-it
+
+# Or switch model in the TUI
+/model gemma-4-27b-it
+
+# Custom LM Studio address
+ai -m devstral-small-2 --local-url http://localhost:1234/v1
+
+# Or set it permanently via env
+export LM_STUDIO_URL=http://localhost:1234/v1
+```
+
+**Recommended model stack for RTX 5090 (32GB VRAM):**
+
+| Role | Model | Why |
+|------|-------|-----|
+| Deep research / planning | `gemma-4-27b-it` | Gemma 4 31B-it — 80% LiveCodeBench, native tool calling, 256K ctx |
+| Agentic coding / patching | `devstral-small-2` | Devstral Small 2 24B — 68% SWE-bench, built for multi-file editing |
+| Fast routing / classifier | `gemma-4-2b-it` | Gemma 4 E2B ~3.2 GB VRAM at Q4 |
+| Summarization / memory | `gemma-4-4b-it` | Gemma 4 E4B ~5.0 GB VRAM at Q4 |
+| Coding alternative | `qwen3-32b` | Reasoning + thinking/non-thinking modes, Apache-2.0 |
+
+> **VRAM note:** Only one large model needs to be active at a time. Swap between `gemma-4-27b-it` (research) and `devstral-small-2` (coding) as needed. The small models can stay loaded alongside the active large model.
+
+**Troubleshooting:**
+
+```bash
+# Verify LM Studio server is running
+curl http://localhost:1234/v1/models
+
+# If unreachable, update the address
+/config localUrl http://localhost:1234/v1
+
+# Check current backend
+/model
+```
 
 ---
 
