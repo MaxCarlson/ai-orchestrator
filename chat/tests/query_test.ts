@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'bun:test'
-import { queryLoop } from '../src/query.js'
+import { queryLoop, dispatchTools } from '../src/query.js'
 import type { Message } from '../src/types/message.js'
 
 const HAS_KEY = !!process.env['ANTHROPIC_API_KEY']
 
 describe('queryLoop', () => {
+  it('exports dispatchTools helper', () => {
+    expect(typeof dispatchTools).toBe('function')
+  })
+
   it('emits text_delta events from a pure text response', async () => {
     if (!HAS_KEY) {
       console.log('  Skipping: ANTHROPIC_API_KEY not set')
