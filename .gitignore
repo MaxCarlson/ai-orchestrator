@@ -74,3 +74,17 @@ htmlcov/
 *.temp
 .cache/
 .worktrees/
+node_modules/
+# Process IDs
+*.pid
+
+# Logs
+wget-log
+*.log
+
+# AI Tooling / IDE Metadata
+#.claude/
+#.codex
+
+# Project specific ignores (if images are generated)
+images/
