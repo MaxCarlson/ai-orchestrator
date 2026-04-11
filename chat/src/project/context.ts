@@ -29,6 +29,14 @@ export function buildProjectSystemPromptAddition(): string {
     `Working directory root: ${info.gitRoot}`,
   ]
 
+  if (info.repoTree) {
+    lines.push('\n### Repository Structure (tracked files, 2 levels deep)\n')
+    lines.push('```')
+    lines.push(info.repoTree)
+    lines.push('```')
+    lines.push('\nUse the Read, Glob, or Grep tools to explore file contents. The structure above reflects the actual state of the repository — do not claim directories or files do not exist without first using a tool to verify.')
+  }
+
   if (info.claudeMd) {
     lines.push('\n### Project Instructions (CLAUDE.md)\n')
     lines.push(info.claudeMd)

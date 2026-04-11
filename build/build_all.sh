@@ -19,11 +19,11 @@ fi
 COMPOSE_EMPTY_ENV="$(mktemp)"
 trap 'rm -f "$COMPOSE_EMPTY_ENV"' EXIT
 
-echo "==> Building containers (docker compose build --pull=missing)"
-docker compose --env-file "$COMPOSE_EMPTY_ENV" build --pull=missing
+echo "==> Building containers (docker compose build)"
+docker compose --env-file "$COMPOSE_EMPTY_ENV" build
 
 echo "==> Starting services (docker compose up -d)"
-docker compose --env-file "$COMPOSE_EMPTY_ENV" up -d
+docker compose --env-file "$COMPOSE_EMPTY_ENV" up -d --remove-orphans
 
 echo "==> Current service status"
 docker compose --env-file "$COMPOSE_EMPTY_ENV" ps

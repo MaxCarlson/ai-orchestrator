@@ -13,20 +13,11 @@ if [ -f "$REPO_ROOT/.env" ]; then
     set +a
 fi
 
-BUILD_PULL="${BUILD_PULL:-0}"
 run_build() {
-    if [ "$BUILD_PULL" = "1" ]; then
-        docker compose build --pull=missing
-    else
-        docker compose build
-    fi
+    docker compose build
 }
 
-if [ "$BUILD_PULL" = "1" ]; then
-    echo "==> Building containers (docker compose build --pull=missing)"
-else
-    echo "==> Building containers (docker compose build)"
-fi
+echo "==> Building containers (docker compose build)"
 set +e
 BUILD_OUTPUT="$(run_build 2>&1)"
 BUILD_STATUS=$?
@@ -40,11 +31,7 @@ if [ $BUILD_STATUS -ne 0 ]; then
         echo "==> Retrying build with temporary anonymous Docker config..."
         TMP_DOCKER_CONFIG="$(mktemp -d)"
         printf '{\"auths\":{}}' > "${TMP_DOCKER_CONFIG}/config.json"
-        if [ "$BUILD_PULL" = "1" ]; then
-            DOCKER_CONFIG="$TMP_DOCKER_CONFIG" docker compose build --pull=missing
-        else
-            DOCKER_CONFIG="$TMP_DOCKER_CONFIG" docker compose build
-        fi
+        DOCKER_CONFIG="$TMP_DOCKER_CONFIG" docker compose build
         rm -rf "$TMP_DOCKER_CONFIG"
     else
         exit $BUILD_STATUS

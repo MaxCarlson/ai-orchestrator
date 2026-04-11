@@ -4,7 +4,8 @@
   "private": true,
   "workspaces": ["chat"],
   "scripts": {
-    "chat": "cd chat && ~/.bun/bin/bun run src/cli.ts",
-    "chat:test": "cd chat && ~/.bun/bin/bun test"
+    "chat":       "cd chat && ~/.bun/bin/bun run src/cli.ts",
+    "chat:serve": "cd chat && ~/.bun/bin/bun run src/server.ts",
+    "chat:test":  "cd chat && ~/.bun/bin/bun test"
   }
 }

@@ -1,1356 +1,1421 @@
-# Chatbot Agent Mode — Web UI + Multi-Provider Integration Plan
+# Chatbot Agent — Web UI & Feature Expansion Plan (Revised 2026-04-11)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-> **Prerequisite:** Plan A (`2026-04-04-chatbot-agent-tui.md`) AND Plan C (`2026-04-04-chatbot-local-models.md`) must be merged before starting.
-
-**Goal:** Add a browser chat panel to the existing web viewer with provider selection (local LM Studio, Claude, Gemini, OpenAI/Codex), bridged via a Bun WebSocket server. Gemini and OpenAI/Codex backends are added to the TypeScript agent so all providers share the same TUI and web UI.
-
-**Architecture:** The TypeScript `chat/` package gains: (1) a Gemini backend (`backends/gemini_backend.ts`) using `@google/generative-ai`, (2) extended routing in `QueryEngine` for `gemini-*` and `gpt-*`/`o*` model names pointing to OpenAI's API, (3) a Bun WebSocket server (`server.ts`) wrapping `QueryEngine`. The Python FastAPI app proxies WebSocket connections transparently. The browser chat panel has a model/provider selector that sends `/model <name>` to switch providers. GitHub Copilot has no public streaming chat API and is omitted.
-
-**Security note:** All DOM manipulation in `chat.js` uses `textContent` and `createElement`/`appendChild` — never `innerHTML` — to prevent XSS.
-
-**Tech Stack:** Bun ≥1.1, TypeScript 5.7, @google/generative-ai ^0.21 (new), openai ^4 (from Plan C), FastAPI WebSocket proxy (existing `websockets` dep), vanilla JS + CSS
-
-**Provider routing (after this plan):**
-
-| Model prefix | Backend | Auth |
-|---|---|---|
-| `gemini-*` | Google Generative AI SDK | `GEMINI_API_KEY` |
-| `claude-*` | Anthropic SDK | `ANTHROPIC_API_KEY` |
-| `gpt-*`, `o1-*`, `o3-*` | OpenAI SDK → api.openai.com | `OPENAI_API_KEY` |
-| anything else | OpenAI SDK → LM Studio local | none |
+> **Prerequisite:** Plan A TUI is complete and merged.
 
 ---
 
-## File Map
+## Status: What's Already Done
+
+The following were completed during Plan A implementation (crossed off — do not redo):
+
+- ~~Task A: Gemini API backend (`backends/gemini_backend.ts`)~~
+- ~~Task B: Extended QueryEngine routing (gemini-*, claude-*, gpt-*, local)~~
+- ~~Task C: Bun WebSocket server (`server.ts`)~~
+- ~~Task D: FastAPI WebSocket proxy + `/api/chat/models` endpoint (`api/chat.py`)~~
+- ~~Task E: Browser chat SPA view (chat.js, chat.css, index.html integration)~~
+- ~~Task F: Dynamic model selector (populated from `/api/chat/models` at runtime)~~
+- ~~Task G: Log viewer panel with thinking/tool-use/tool-result/model-output categories~~
+- ~~Task H: Docker container for chat server (`docker/chat/Dockerfile`, docker-compose service)~~
+- ~~Task I: `build/start.sh` and `build/build_all.sh` fixed (`--pull=missing`)~~
+
+---
+
+## Remaining Feature Map
 
 ```
 chat/
-├── package.json                         MODIFY  — add @google/generative-ai ^0.21
 ├── src/
 │   ├── backends/
-│   │   └── gemini_backend.ts            CREATE  — Gemini API streaming backend
-│   ├── QueryEngine.ts                   MODIFY  — route gemini-* and gpt-*/o* prefixes
-│   ├── commands/
-│   │   └── model.ts                     MODIFY  — add Gemini + OpenAI model presets
-│   └── server.ts                        CREATE  — Bun WebSocket server wrapping QueryEngine
-└── tests/
-    ├── backends/
-    │   └── gemini_backend_test.ts       CREATE  — message converter unit tests
-    └── server_test.ts                   CREATE  — WS server smoke test
-
+│   │   ├── cli_claude.ts          CREATE  — @claude CLI subprocess backend
+│   │   ├── cli_gemini.ts          CREATE  — @gemini CLI subprocess backend
+│   │   ├── cli_codex.ts           CREATE  — @codex CLI subprocess backend
+│   │   └── cli_copilot.ts         CREATE  — @copilot CLI subprocess backend
+│   └── QueryEngine.ts             MODIFY  — route @-prefixed models to CLI backends
+│
 orchestrator_web_viewer/orchestrator_web_viewer/
 ├── api/
-│   └── chat.py                          CREATE  — FastAPI WS proxy endpoint
+│   ├── chat.py                    MODIFY  — expose model search, HF model lookup
+│   └── chat_memory.py             CREATE  — per-project + global memory CRUD + stats
 ├── static/
-│   ├── chat.js                          CREATE  — Browser chat panel (textContent only)
-│   └── chat.css                         CREATE  — Chat panel styles
-└── main.py                              MODIFY  — mount chat router + serve /chat page
+│   ├── chat.js                    MODIFY  — model filter, collapse, debug mode
+│   ├── chat.css                   MODIFY  — collapse styles, debug panel
+│   ├── memory.js                  MODIFY  — memory stats + shared-memory UI
+│   └── index.html                 MODIFY  — Memory tab enhancements
+└── templates/benchmark.html       CREATE  — benchmark runner page (future tab)
+
+tests/
+├── chat/tests/backends/
+│   ├── cli_claude_test.ts         CREATE
+│   └── cli_gemini_test.ts         CREATE
+└── orchestrator_web_viewer/tests/
+    └── chat_memory_test.py        CREATE
 ```
 
 ---
 
-## Task 1: Gemini Backend
+## Implementation Order
+
+> Features ordered by dependency and user impact. TUI enhancements mixed in where they unblock or complement web features.
+
+1. **Task 1** — CLI subprocess backends (`@claude`, `@gemini`, `@codex`, `@copilot`)
+2. **Task 2** — TUI: collapsible messages + per-reply tool trace (debug mode)
+3. **Task 3** — WebUI: log panel enhancements (tool timeline, expandable entries)
+4. **Task 4** — WebUI: model dropdown search/filter
+5. **Task 5** — Memory system infrastructure (API + DB schema)
+6. **Task 6** — WebUI: Memory tab (stats, browse, save from chat)
+7. **Task 7** — Chat ↔ Memory integration (save memories, load project context)
+8. **Task 8** — Shared memory groups across projects
+9. **Task 9** — HuggingFace model browser (search + LM Studio download link)
+10. **Task 10** — Agent benchmark runner
+
+---
+
+## Task 1: CLI Subprocess Backends (`@claude`, `@gemini`, `@codex`, `@copilot`)
+
+**Goal:** Route `@claude`, `@gemini`, `@codex`, `@copilot` model names to the actual CLIs
+installed on the host machine, rather than API calls. The `@` prefix signals "use the CLI tool,
+not the API." This is the primary use case the user wants — no API keys needed beyond what
+the CLIs already manage.
+
+**Protocol:** Each CLI backend spawns a child process, sends the conversation as a prompt,
+and streams the response. The backend yields the same `StreamEvent` union as API backends.
 
 **Files:**
-- Modify: `chat/package.json`
-- Create: `chat/src/backends/gemini_backend.ts`
-- Create: `chat/tests/backends/gemini_backend_test.ts`
+- Create: `chat/src/backends/cli_claude.ts`
+- Create: `chat/src/backends/cli_gemini.ts`
+- Create: `chat/src/backends/cli_codex.ts`
+- Create: `chat/src/backends/cli_copilot.ts`
+- Modify: `chat/src/QueryEngine.ts` — add `@` prefix routing
+- Create: `chat/tests/backends/cli_claude_test.ts`
+- Create: `chat/tests/backends/cli_gemini_test.ts`
 
-**Background:** The Gemini API uses `@google/generative-ai` (not OpenAI-compatible). Streaming works through `generateContentStream()`. Tool calling uses a different format — `functionDeclarations` instead of `tools`. The backend converts our `Message[]` to Gemini's `Content[]` format and yields the same `StreamEvent` union as other backends.
+**Routing addition to `QueryEngine.ts`:**
+```typescript
+const isCLI = model.startsWith('@')
+if (isCLI) {
+  const cliName = model.slice(1)  // 'claude', 'gemini', 'codex', 'copilot'
+  const { queryLoopCLI } = await import(`./backends/cli_${cliName}.js`)
+  loop = queryLoopCLI(this.messages, this.tools, baseOptions)
+}
+```
 
-- [ ] **Step 1: Write failing tests**
+**Model list addition in `api/chat.py`:**
+`@claude`, `@gemini`, `@codex`, `@copilot` are already in `_CLI_MODELS` as the first group.
+The QueryEngine just needs to route them. No Python changes required.
+
+### Step 1: Write failing tests for CLI backends
 
 ```typescript
-// chat/tests/backends/gemini_backend_test.ts
+// chat/tests/backends/cli_claude_test.ts
 import { describe, it, expect } from 'bun:test'
-import { toGeminiHistory, toGeminiFunctionDeclarations } from '../../src/backends/gemini_backend.js'
+import { buildClaudeArgs } from '../../src/backends/cli_claude.js'
 import type { Message } from '../../src/types/message.js'
 
-describe('toGeminiHistory', () => {
-  it('converts user message to Gemini user part', () => {
-    const msgs: Message[] = [{ role: 'user', content: 'hello' }]
-    const result = toGeminiHistory(msgs)
-    expect(result).toEqual([{ role: 'user', parts: [{ text: 'hello' }] }])
+describe('buildClaudeArgs', () => {
+  it('returns print flag with conversation text', () => {
+    const msgs: Message[] = [{ role: 'user', content: 'Hello world' }]
+    const args = buildClaudeArgs(msgs, { systemPrompt: '' })
+    expect(args).toContain('--print')
   })
 
-  it('converts assistant text to Gemini model part', () => {
-    const msgs: Message[] = [
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'hi there' }],
-      },
-    ]
-    const result = toGeminiHistory(msgs)
-    expect(result).toEqual([{ role: 'model', parts: [{ text: 'hi there' }] }])
+  it('injects system prompt via --system-prompt flag', () => {
+    const msgs: Message[] = [{ role: 'user', content: 'hi' }]
+    const args = buildClaudeArgs(msgs, { systemPrompt: 'Be terse' })
+    const idx = args.indexOf('--system-prompt')
+    expect(idx).toBeGreaterThan(-1)
+    expect(args[idx + 1]).toBe('Be terse')
   })
 
-  it('skips ToolResultMessage (Gemini tool results handled separately)', () => {
-    const msgs: Message[] = [
-      { role: 'user', content: 'run bash' },
-      {
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'output', is_error: false }],
-      },
-    ]
-    const result = toGeminiHistory(msgs)
-    // Tool results are not in history — they go into the current-turn parts
-    expect(result).toHaveLength(1)
-    expect(result[0]).toEqual({ role: 'user', parts: [{ text: 'run bash' }] })
-  })
-})
-
-describe('toGeminiFunctionDeclarations', () => {
-  it('converts a tool definition', () => {
-    const fakeTool = {
-      definition: () => ({
-        name: 'bash',
-        description: 'Run bash',
-        input_schema: { type: 'object' as const, properties: { command: { type: 'string' } }, required: ['command'] },
-      }),
-      isConcurrencySafe: () => false,
-      execute: async () => '',
-    }
-    const result = toGeminiFunctionDeclarations([fakeTool])
-    expect(result[0]).toMatchObject({ name: 'bash', description: 'Run bash' })
+  it('passes --no-tools when tools list is empty', () => {
+    const msgs: Message[] = [{ role: 'user', content: 'hi' }]
+    const args = buildClaudeArgs(msgs, { systemPrompt: '', noTools: true })
+    expect(args).toContain('--no-tools')
   })
 })
 ```
-
-- [ ] **Step 2: Run to confirm FAIL**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator/chat
-~/.bun/bin/bun test tests/backends/gemini_backend_test.ts
-```
-
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Add `@google/generative-ai` dependency**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator/chat
-~/.bun/bin/bun add @google/generative-ai
-```
-
-Expected: `@google/generative-ai` appears in `chat/package.json`.
-
-- [ ] **Step 4: Create `chat/src/backends/gemini_backend.ts`**
 
 ```typescript
-import { GoogleGenerativeAI, type Content, type FunctionDeclaration, type Part } from '@google/generative-ai'
-import { recordTokenUsage } from '../session/tokenTracker.js'
-import { dispatchTools } from '../query.js'
+// chat/tests/backends/cli_gemini_test.ts
+import { describe, it, expect } from 'bun:test'
+import { buildPromptText } from '../../src/backends/cli_gemini.js'
+import type { Message } from '../../src/types/message.js'
+
+describe('buildPromptText', () => {
+  it('concatenates user/assistant turns', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'What is 2+2?' },
+      { role: 'assistant', content: [{ type: 'text', text: '4' }] },
+      { role: 'user', content: 'And 3+3?' },
+    ]
+    const text = buildPromptText(msgs)
+    expect(text).toContain('What is 2+2?')
+    expect(text).toContain('4')
+    expect(text).toContain('And 3+3?')
+  })
+})
+```
+
+### Step 2: Run to confirm FAIL
+
+```bash
+cd /home/mcarls/projects/ai-orchestrator/chat
+bun test tests/backends/cli_claude_test.ts tests/backends/cli_gemini_test.ts
+```
+
+Expected: FAIL — modules not found.
+
+### Step 3: Create `chat/src/backends/cli_claude.ts`
+
+The `claude` CLI (Claude Code) accepts `--print` for non-interactive output, reads from stdin
+or `--message`, and streams markdown text. Tool use is handled by the claude CLI itself —
+our job is just to pass the conversation and stream the response.
+
+```typescript
+import { spawn } from 'child_process'
 import type { Message, StreamEvent } from '../types/message.js'
-import type { Tool } from '../types/tool.js'
 import type { QueryOptions } from '../query.js'
 
-// ── Message conversion ────────────────────────────────────────────────────────
-
-/**
- * Converts Message[] to Gemini Content[] history format.
- * ToolResultMessages are excluded — Gemini handles them as function_response
- * parts in the current turn, not as prior history. AssistantMessages with
- * tool_use blocks are converted to function_call parts.
- */
-export function toGeminiHistory(messages: Message[]): Content[] {
-  const result: Content[] = []
-
-  for (const msg of messages) {
-    if (msg.role === 'user' && typeof msg.content === 'string') {
-      result.push({ role: 'user', parts: [{ text: msg.content }] })
-      continue
-    }
-
-    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
-      const parts: Part[] = []
-      for (const block of msg.content) {
-        if (block.type === 'text' && block.text) {
-          parts.push({ text: block.text })
-        } else if (block.type === 'tool_use') {
-          parts.push({
-            functionCall: {
-              name: block.name,
-              args: block.input as Record<string, unknown>,
-            },
-          })
-        }
-      }
-      if (parts.length > 0) result.push({ role: 'model', parts })
-      continue
-    }
-
-    // ToolResultMessages (role: 'user', content: ToolResultBlock[]) are skipped
-    // here — they are spliced into the current-turn function_response parts below.
-  }
-
-  return result
+interface ClaudeArgOptions {
+  systemPrompt: string
+  noTools?: boolean
 }
 
-// ── Tool definition conversion ────────────────────────────────────────────────
-
-export function toGeminiFunctionDeclarations(tools: Tool[]): FunctionDeclaration[] {
-  return tools.map(t => {
-    const def = t.definition()
-    return {
-      name: def.name,
-      description: def.description,
-      parameters: def.input_schema as Record<string, unknown>,
-    } as FunctionDeclaration
-  })
+export function buildClaudeArgs(messages: Message[], opts: ClaudeArgOptions): string[] {
+  const args: string[] = ['--print']
+  if (opts.systemPrompt) {
+    args.push('--system-prompt', opts.systemPrompt)
+  }
+  if (opts.noTools) {
+    args.push('--no-tools')
+  }
+  // Last user message is the prompt; prior turns become conversation context
+  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+  if (lastUserMsg && typeof lastUserMsg.content === 'string') {
+    args.push('--message', lastUserMsg.content)
+  }
+  return args
 }
 
-// ── Extract pending tool results from message list ────────────────────────────
-
 /**
- * Pulls the last ToolResultMessage from messages and converts it to Gemini
- * function_response parts (used when we're in a tool-call follow-up turn).
+ * CLI backend for `@claude` — spawns the `claude` CLI and streams its output.
+ * Yields StreamEvents compatible with the API backends.
+ * NOTE: The claude CLI manages its own tool use; we stream text only.
  */
-function extractPendingToolResponseParts(messages: Message[]): Part[] {
-  const parts: Part[] = []
-  const last = messages.at(-1)
-  if (!last || last.role !== 'user' || typeof last.content !== 'object' || !Array.isArray(last.content)) {
-    return parts
-  }
-  for (const block of last.content) {
-    if (block.type === 'tool_result') {
-      parts.push({
-        functionResponse: {
-          name: block.tool_use_id, // Gemini matches by name; we use tool_use_id as proxy
-          response: { output: block.content },
-        },
-      })
-    }
-  }
-  return parts
-}
-
-// ── Query loop ────────────────────────────────────────────────────────────────
-
-/**
- * Gemini API agent loop. Yields the same StreamEvent union as queryLoop.
- * Mutates `messages` in place — same contract as other backends.
- *
- * Model routing: called by QueryEngine when model name starts with 'gemini-'.
- * Requires GEMINI_API_KEY environment variable.
- */
-export async function* queryLoopGemini(
+export async function* queryLoopCLI(
   messages: Message[],
-  tools: Tool[],
+  _tools: unknown[],
   options: QueryOptions,
 ): AsyncGenerator<StreamEvent> {
-  const { model, maxTurns, systemPrompt, abortSignal, workingDir } = options
+  const { systemPrompt, abortSignal } = options
+  const args = buildClaudeArgs(messages, { systemPrompt })
 
-  const apiKey = process.env['GEMINI_API_KEY']
-  if (!apiKey) {
-    yield { type: 'error', error: 'GEMINI_API_KEY environment variable is not set' }
+  const child = spawn('claude', args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  })
+
+  abortSignal.addEventListener('abort', () => { child.kill('SIGTERM') }, { once: true })
+
+  let errorText = ''
+  child.stderr?.on('data', (chunk: Buffer) => { errorText += chunk.toString() })
+
+  for await (const chunk of child.stdout ?? []) {
+    if (abortSignal.aborted) { yield { type: 'error', error: 'Aborted' }; return }
+    yield { type: 'text_delta', text: (chunk as Buffer).toString() }
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    child.on('close', (code) => {
+      if (code !== 0 && !abortSignal.aborted) {
+        reject(new Error(`claude CLI exited ${code}: ${errorText}`))
+      } else {
+        resolve()
+      }
+    })
+  }).catch((err: Error) => {
+    return { type: 'error' as const, error: err.message }
+  })
+
+  yield { type: 'message_stop' }
+}
+```
+
+### Step 4: Create `chat/src/backends/cli_gemini.ts`
+
+```typescript
+import { spawn } from 'child_process'
+import type { Message, StreamEvent } from '../types/message.js'
+import type { QueryOptions } from '../query.js'
+
+/**
+ * Build a flat prompt string from message history for CLIs that don't
+ * accept structured conversation (gemini, codex, copilot).
+ */
+export function buildPromptText(messages: Message[]): string {
+  return messages.map(msg => {
+    if (msg.role === 'user' && typeof msg.content === 'string') {
+      return `User: ${msg.content}`
+    }
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const text = msg.content
+        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+        .map(b => b.text)
+        .join('')
+      return `Assistant: ${text}`
+    }
+    return ''
+  }).filter(Boolean).join('\n\n')
+}
+
+export async function* queryLoopCLI(
+  messages: Message[],
+  _tools: unknown[],
+  options: QueryOptions,
+): AsyncGenerator<StreamEvent> {
+  const { abortSignal } = options
+  const prompt = buildPromptText(messages)
+
+  const child = spawn('gemini', ['--prompt', prompt], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  })
+
+  abortSignal.addEventListener('abort', () => { child.kill('SIGTERM') }, { once: true })
+
+  let errorText = ''
+  child.stderr?.on('data', (chunk: Buffer) => { errorText += chunk.toString() })
+
+  for await (const chunk of child.stdout ?? []) {
+    if (abortSignal.aborted) { yield { type: 'error', error: 'Aborted' }; return }
+    yield { type: 'text_delta', text: (chunk as Buffer).toString() }
+  }
+
+  await new Promise<void>((resolve) => {
+    child.on('close', () => resolve())
+  })
+
+  yield { type: 'message_stop' }
+}
+```
+
+### Step 5: Create `chat/src/backends/cli_codex.ts`
+
+Same `buildPromptText` pattern, spawns `codex`:
+
+```typescript
+import { spawn } from 'child_process'
+import { buildPromptText } from './cli_gemini.js'
+import type { Message, StreamEvent } from '../types/message.js'
+import type { QueryOptions } from '../query.js'
+
+export async function* queryLoopCLI(
+  messages: Message[],
+  _tools: unknown[],
+  options: QueryOptions,
+): AsyncGenerator<StreamEvent> {
+  const { abortSignal } = options
+  const prompt = buildPromptText(messages)
+
+  const child = spawn('codex', ['--quiet', prompt], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  })
+
+  abortSignal.addEventListener('abort', () => { child.kill('SIGTERM') }, { once: true })
+
+  for await (const chunk of child.stdout ?? []) {
+    if (abortSignal.aborted) { yield { type: 'error', error: 'Aborted' }; return }
+    yield { type: 'text_delta', text: (chunk as Buffer).toString() }
+  }
+
+  await new Promise<void>(resolve => child.on('close', resolve))
+  yield { type: 'message_stop' }
+}
+```
+
+### Step 6: Create `chat/src/backends/cli_copilot.ts`
+
+```typescript
+import { spawn } from 'child_process'
+import { buildPromptText } from './cli_gemini.js'
+import type { Message, StreamEvent } from '../types/message.js'
+import type { QueryOptions } from '../query.js'
+
+export async function* queryLoopCLI(
+  messages: Message[],
+  _tools: unknown[],
+  options: QueryOptions,
+): AsyncGenerator<StreamEvent> {
+  const { abortSignal } = options
+  const prompt = buildPromptText(messages)
+
+  // GitHub Copilot CLI uses `gh copilot explain` or `gh copilot suggest`
+  // For general chat, we use `gh copilot explain` with the prompt as the topic
+  const child = spawn('gh', ['copilot', 'explain', prompt], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  })
+
+  abortSignal.addEventListener('abort', () => { child.kill('SIGTERM') }, { once: true })
+
+  for await (const chunk of child.stdout ?? []) {
+    if (abortSignal.aborted) { yield { type: 'error', error: 'Aborted' }; return }
+    yield { type: 'text_delta', text: (chunk as Buffer).toString() }
+  }
+
+  await new Promise<void>(resolve => child.on('close', resolve))
+  yield { type: 'message_stop' }
+}
+```
+
+### Step 7: Update `chat/src/QueryEngine.ts` to route `@` prefixes
+
+Find the routing block (around `const isGemini = ...`) and add before it:
+
+```typescript
+// CLI backends: @claude, @gemini, @codex, @copilot
+if (cfg.model.startsWith('@')) {
+  const cliName = cfg.model.slice(1)  // strip the @
+  const validCLIs = ['claude', 'gemini', 'codex', 'copilot']
+  if (!validCLIs.includes(cliName)) {
+    yield { type: 'error', error: `Unknown CLI backend: @${cliName}. Valid: ${validCLIs.join(', ')}` }
     return
   }
-
-  const genAI = new GoogleGenerativeAI(apiKey)
-  const functionDeclarations = tools.length > 0 ? toGeminiFunctionDeclarations(tools) : undefined
-
-  const geminiModel = genAI.getGenerativeModel({
-    model,
-    systemInstruction: systemPrompt || undefined,
-    ...(functionDeclarations ? { tools: [{ functionDeclarations }] } : {}),
-  })
-
-  let turns = 0
-
-  while (turns < maxTurns) {
-    turns++
-
-    // Build history from messages (excluding the last message which is the current prompt)
-    const allButLast = messages.slice(0, -1)
-    const last = messages.at(-1)
-
-    if (!last) break
-
-    const history = toGeminiHistory(allButLast)
-
-    // Current turn parts
-    let currentParts: Part[]
-    if (last.role === 'user' && typeof last.content === 'string') {
-      currentParts = [{ text: last.content }]
-    } else if (last.role === 'user' && Array.isArray(last.content)) {
-      // Tool results from previous turn
-      currentParts = extractPendingToolResponseParts(messages)
-      if (currentParts.length === 0) break
-    } else {
-      break
-    }
-
-    const chat = geminiModel.startChat({ history })
-    let streamResult: Awaited<ReturnType<typeof chat.sendMessageStream>>
-
-    try {
-      streamResult = await chat.sendMessageStream(currentParts)
-    } catch (err) {
-      yield { type: 'error', error: (err as Error).message }
-      return
-    }
-
-    let responseText = ''
-    const pendingToolCalls: Array<{ name: string; args: Record<string, unknown> }> = []
-    let toolCallId = 0
-
-    for await (const chunk of streamResult.stream) {
-      if (abortSignal.aborted) { yield { type: 'error', error: 'Aborted' }; return }
-
-      for (const part of chunk.candidates?.[0]?.content?.parts ?? []) {
-        if ('text' in part && part.text) {
-          responseText += part.text
-          yield { type: 'text_delta', text: part.text }
-        }
-
-        if ('functionCall' in part && part.functionCall) {
-          const id = `gemini_tc_${toolCallId++}`
-          pendingToolCalls.push({ name: part.functionCall.name, args: part.functionCall.args as Record<string, unknown> })
-          yield { type: 'tool_use_start', toolName: part.functionCall.name, toolUseId: id }
-          yield { type: 'tool_use_end' }
-        }
-      }
-    }
-
-    // Token usage from aggregated response
-    try {
-      const finalResponse = await streamResult.response
-      const usage = finalResponse.usageMetadata
-      if (usage) {
-        recordTokenUsage(usage.promptTokenCount ?? 0, usage.candidatesTokenCount ?? 0, 0)
-      }
-    } catch { /* usage not always available */ }
-
-    yield { type: 'message_stop' }
-
-    // Build assembled assistant message in Anthropic ContentBlock format
-    const assistantContent: Message['content'] = []
-    if (responseText) {
-      (assistantContent as Array<{ type: 'text'; text: string }>).push({ type: 'text', text: responseText })
-    }
-    for (const [i, tc] of pendingToolCalls.entries()) {
-      const id = `gemini_tc_${i}`
-      ;(assistantContent as Array<{ type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }>).push(
-        { type: 'tool_use', id, name: tc.name, input: tc.args },
-      )
-    }
-    messages.push({ role: 'assistant', content: assistantContent as import('@anthropic-ai/sdk/resources/messages.js').ContentBlock[] })
-
-    if (pendingToolCalls.length === 0) break
-
-    const pendingToolUse = pendingToolCalls.map((tc, i) => ({
-      id: `gemini_tc_${i}`,
-      name: tc.name,
-      inputJson: JSON.stringify(tc.args),
-    }))
-
-    const toolResults = await dispatchTools(pendingToolUse, tools, { abortSignal, workingDir })
-
-    messages.push({
-      role: 'user',
-      content: toolResults.map(r => ({
-        type: 'tool_result' as const,
-        tool_use_id: r.tool_use_id,
-        content: r.content,
-        ...(r.is_error ? { is_error: true } : {}),
-      })),
-    })
+  const { queryLoopCLI } = await import(`./backends/cli_${cliName}.js`)
+  for await (const event of queryLoopCLI(this.messages, this.tools, baseOptions)) {
+    yield event
   }
+  return
 }
 ```
 
-- [ ] **Step 5: Run tests**
+### Step 8: Run all tests
 
 ```bash
 cd /home/mcarls/projects/ai-orchestrator/chat
-~/.bun/bin/bun test
+bun test
 ```
 
-Expected: All prior tests + 3 new Gemini converter tests pass.
+Expected: All tests pass. CLI backend unit tests pass (they only test arg-building, not actual CLI invocation).
 
-- [ ] **Step 6: Typecheck**
+### Step 9: Manual smoke test (requires CLIs on host)
 
 ```bash
-~/.bun/bin/bun run typecheck
+# Test @claude routing (requires claude CLI on $PATH)
+cd /home/mcarls/projects/ai-orchestrator/chat
+echo '{ "type": "message", "text": "@claude say hi" }' | bun run src/server.ts &
+# Or just: bun run tui --model @claude
 ```
 
-Expected: No errors.
-
-- [ ] **Step 7: Commit**
+### Step 10: Commit
 
 ```bash
 cd /home/mcarls/projects/ai-orchestrator
-git add chat/package.json chat/bun.lock chat/src/backends/gemini_backend.ts chat/tests/backends/gemini_backend_test.ts
-git commit -m "feat(chat): add Gemini API streaming backend"
+git add chat/src/backends/cli_*.ts chat/tests/backends/cli_*_test.ts chat/src/QueryEngine.ts
+git commit -m "feat(chat): add CLI subprocess backends for @claude, @gemini, @codex, @copilot"
 ```
 
 ---
 
-## Task 2: Extended Routing — Gemini + OpenAI Cloud + Model Presets
+## Task 2: TUI — Collapsible Messages + Per-Reply Debug Mode
+
+**Goal:** In the Ink TUI (`screens/REPL.tsx` + `screens/MessageList.tsx`):
+1. Click/enter on a message to collapse/expand it (show first line + `[...]` when collapsed)
+2. `Ctrl+D` toggles debug mode — each assistant reply shows a tool-use trace below it
+3. In debug mode: tool name, input summary, output summary, timing, and what the model did next
+4. New keyboard shortcuts: `c` = collapse all, `e` = expand all, `Enter` on focused message = toggle
 
 **Files:**
-- Modify: `chat/src/QueryEngine.ts`
-- Modify: `chat/src/commands/model.ts`
+- Modify: `chat/src/screens/MessageList.tsx` — collapsible state, focus, keyboard nav
+- Modify: `chat/src/screens/REPL.tsx` — debug mode toggle, pass tool traces
+- Modify: `chat/src/types/message.ts` — add `ToolTrace` type
+- Create: `chat/tests/repl_collapse_test.ts`
 
-**Background:** After this task, `QueryEngine` routes four ways:
-- `gemini-*` → `queryLoopGemini`
-- `claude-*` → `queryLoop` (Anthropic)
-- `gpt-*`, `o1-*`, `o3-*` → `queryLoopOpenAI` pointing at `https://api.openai.com/v1`
-- everything else → `queryLoopOpenAI` pointing at `localUrl` (LM Studio)
-
-The OpenAI backend from Plan C can handle both LM Studio AND `api.openai.com` — they're the same protocol, different baseURL and API key.
-
-- [ ] **Step 1: Update `chat/src/QueryEngine.ts` routing**
-
-Read `QueryEngine.ts` and find the backend routing section added in Plan C:
-
+**`ToolTrace` type addition to `types/message.ts`:**
 ```typescript
-    const isLocalModel = !cfg.model.startsWith('claude-')
-    const loopFn = isLocalModel ? queryLoopOpenAI : queryLoop
-```
-
-Replace with:
-
-```typescript
-    // Route by model name prefix:
-    //   gemini-*        → Google Generative AI
-    //   claude-*        → Anthropic
-    //   gpt-* / o1-* / o3-*  → OpenAI API (api.openai.com)
-    //   anything else   → LM Studio local (OpenAI-compat at localUrl)
-    const isGemini = cfg.model.startsWith('gemini-')
-    const isClaude = cfg.model.startsWith('claude-')
-    const isOpenAICloud = /^(gpt-|o1-|o3-)/.test(cfg.model)
-
-    let loopOptions = {
-      model: cfg.model,
-      maxTurns: cfg.maxTurns,
-      systemPrompt: cfg.systemPrompt + projectAddition,
-      abortSignal,
-      workingDir: this.workingDir,
-      localUrl: isOpenAICloud ? 'https://api.openai.com/v1' : cfg.localUrl,
-    }
-
-    const loopFn = isGemini ? queryLoopGemini
-      : isClaude ? queryLoop
-      : queryLoopOpenAI  // handles both LM Studio and OpenAI cloud via localUrl
-```
-
-Also add the Gemini import at the top with the other backend imports:
-
-```typescript
-import { queryLoopGemini } from './backends/gemini_backend.js'
-```
-
-And change the for-loop to use `loopOptions`:
-
-```typescript
-    for await (const event of loopFn(this.messages, this.tools, loopOptions)) {
-      yield event
-    }
-```
-
-For the OpenAI cloud case, the `queryLoopOpenAI` function also needs to pick up the API key from `OPENAI_API_KEY`. Read `chat/src/backends/openai_compat.ts` and update the client construction:
-
-```typescript
-  const client = new OpenAI({
-    baseURL: localUrl ?? 'http://localhost:1234/v1',
-    // For api.openai.com, use OPENAI_API_KEY; for LM Studio, any non-empty string works
-    apiKey: process.env['OPENAI_API_KEY'] ?? 'lm-studio',
-  })
-```
-
-- [ ] **Step 2: Update `chat/src/commands/model.ts`** with Gemini + OpenAI presets
-
-Replace `model.ts` entirely:
-
-```typescript
-import type { SlashCommand, CommandContext, CommandResult } from '../types/command.js'
-import { getConfig, setConfig } from './config.js'
-
-const ANTHROPIC_MODELS = [
-  'claude-opus-4-6',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-5-20251001',
-]
-
-const GEMINI_MODELS = [
-  'gemini-2.5-pro',
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-]
-
-const OPENAI_MODELS = [
-  'gpt-4o',
-  'gpt-4o-mini',
-  'o3',
-  'o1',
-]
-
-// Local model IDs as they appear in LM Studio UI
-const LOCAL_MODELS = [
-  'gemma-4-27b-it',        // Deep research / planning — Gemma 4 31B-it
-  'devstral-small-2',      // Agentic coding / repo editing — Devstral Small 2 24B
-  'qwen3-32b',             // Reasoning + coding + thinking modes
-  'gemma-4-4b-it',         // Summarization / memory — Gemma 4 E4B
-  'gemma-4-2b-it',         // Router / classifier — Gemma 4 E2B
-]
-
-function getBackendLabel(model: string, localUrl: string): string {
-  if (model.startsWith('gemini-')) return 'Google Generative AI (GEMINI_API_KEY)'
-  if (model.startsWith('claude-')) return 'Anthropic API (ANTHROPIC_API_KEY)'
-  if (/^(gpt-|o1-|o3-)/.test(model)) return 'OpenAI API (OPENAI_API_KEY)'
-  return `local LM Studio (${localUrl})`
+export interface ToolTrace {
+  toolName: string
+  toolUseId: string
+  inputSummary: string   // first 200 chars of JSON input
+  outputSummary: string  // first 200 chars of output
+  durationMs: number
+  isError: boolean
 }
 
-export class ModelCommand implements SlashCommand {
-  name = 'model'
-  aliases = ['m']
-  description = 'View or switch model: /model [name]'
+export interface AssistantTurnDebug {
+  messageIndex: number   // index in ChatMessage[] this trace belongs to
+  traces: ToolTrace[]
+}
+```
 
-  async execute(args: string, _ctx: CommandContext): Promise<CommandResult> {
-    const name = args.trim()
-    const cfg = getConfig()
-    const backend = getBackendLabel(cfg.model, cfg.localUrl)
+**MessageList collapse behavior:**
+- Each message stores `collapsed: boolean` in local state map
+- Collapsed: show role label + first ~80 chars + `[collapsed — click/Enter to expand]`
+- Expanded: full text as before
+- Arrow keys navigate focused message; Enter toggles collapse
 
-    if (!name) {
-      const fmt = (list: string[]) =>
-        list.map(m => (m === cfg.model ? `  * ${m} (current)` : `    ${m}`)).join('\n')
+**Debug mode in REPL:**
+- `Ctrl+D` flips `debugMode: boolean` state
+- When `debugMode` is true, after each assistant message insert a `ToolTrace[]` summary
+- The `QueryEngine` already yields `tool_use_start/end` events; REPL accumulates them per turn
+- Format per tool: `  ⚙ BashTool({"command":"ls /"}) → "bin dev etc home..." [42ms]`
 
-      return {
-        type: 'output',
-        text: [
-          `Current model: ${cfg.model}`,
-          `Backend: ${backend}`,
-          '',
-          `Local models — LM Studio at ${cfg.localUrl}:`,
-          fmt(LOCAL_MODELS),
-          '',
-          'Anthropic models (ANTHROPIC_API_KEY):',
-          fmt(ANTHROPIC_MODELS),
-          '',
-          'Gemini models (GEMINI_API_KEY):',
-          fmt(GEMINI_MODELS),
-          '',
-          'OpenAI models (OPENAI_API_KEY):',
-          fmt(OPENAI_MODELS),
-          '',
-          'Usage: /model <name>',
-          'Tip:   /config localUrl http://localhost:1234/v1  — change LM Studio address',
-        ].join('\n'),
-      }
+### Step 1: Write failing tests
+
+```typescript
+// chat/tests/repl_collapse_test.ts
+import { describe, it, expect } from 'bun:test'
+import { truncateForCollapse, formatToolTrace } from '../src/screens/MessageList.js'
+
+describe('truncateForCollapse', () => {
+  it('returns full text when under 80 chars', () => {
+    expect(truncateForCollapse('hello world', false)).toBe('hello world')
+  })
+
+  it('truncates and adds indicator when collapsed', () => {
+    const long = 'a'.repeat(200)
+    const result = truncateForCollapse(long, true)
+    expect(result.length).toBeLessThan(100)
+    expect(result).toContain('…')
+  })
+})
+
+describe('formatToolTrace', () => {
+  it('formats a tool trace entry', () => {
+    const trace = {
+      toolName: 'BashTool',
+      toolUseId: 'tu_1',
+      inputSummary: '{"command":"echo hi"}',
+      outputSummary: 'hi\n',
+      durationMs: 23,
+      isError: false,
     }
+    const line = formatToolTrace(trace)
+    expect(line).toContain('BashTool')
+    expect(line).toContain('23ms')
+    expect(line).toContain('echo hi')
+  })
 
-    setConfig({ model: name })
-    const newBackend = getBackendLabel(name, cfg.localUrl)
-    return { type: 'output', text: `Model switched to: ${name}\nBackend: ${newBackend}` }
+  it('marks errors visually', () => {
+    const trace = {
+      toolName: 'BashTool',
+      toolUseId: 'tu_2',
+      inputSummary: '{"command":"rm -rf /"}',
+      outputSummary: 'Permission denied',
+      durationMs: 5,
+      isError: true,
+    }
+    const line = formatToolTrace(trace)
+    expect(line).toContain('✗')
+  })
+})
+```
+
+### Step 2: Run to confirm FAIL
+
+```bash
+cd /home/mcarls/projects/ai-orchestrator/chat
+bun test tests/repl_collapse_test.ts
+```
+
+### Step 3: Add exported helpers to `MessageList.tsx`
+
+Add these pure functions (no React import needed, just export from the file):
+
+```typescript
+export function truncateForCollapse(text: string, collapsed: boolean, limit = 80): string {
+  if (!collapsed || text.length <= limit) return text
+  return text.slice(0, limit) + '…'
+}
+
+export function formatToolTrace(trace: import('../types/message.js').ToolTrace): string {
+  const icon = trace.isError ? '✗' : '⚙'
+  const input = trace.inputSummary.slice(0, 60).replace(/\n/g, ' ')
+  const output = trace.outputSummary.slice(0, 60).replace(/\n/g, ' ')
+  return `  ${icon} ${trace.toolName}(${input}) → "${output}" [${trace.durationMs}ms]`
+}
+```
+
+### Step 4: Update `MessageList.tsx` for collapse/focus
+
+Add `collapsed` state map and keyboard navigation (see implementation notes):
+
+Key changes:
+- `const [collapsedSet, setCollapsedSet] = useState<Set<number>>(new Set())`
+- `const [focusIdx, setFocusIdx] = useState(-1)` — -1 = no focus
+- `useInput` block in the REPL passes key events down or MessageList handles them
+- `c` key = collapse all, `e` = expand all (only when no input bar is active)
+- `Enter` when `focusIdx >= 0` toggles that message
+
+### Step 5: Update `REPL.tsx` for debug mode + tool traces
+
+Key changes:
+- `const [debugMode, setDebugMode] = useState(false)` — `Ctrl+D` toggles
+- Accumulate `ToolTrace[]` per assistant turn during streaming:
+  ```typescript
+  const traceRef = useRef<ToolTrace[]>([])
+  // in event handler:
+  if (event.type === 'tool_use_start') {
+    traceRef.current.push({ toolName: event.toolName, toolUseId: event.toolUseId,
+      inputSummary: '', outputSummary: '', durationMs: 0, isError: false, _start: Date.now() })
   }
-}
-```
+  if (event.type === 'tool_result') {
+    // fill in output + timing for matching toolUseId
+  }
+  ```
+- On `message_stop`: if `debugMode`, append a synthetic `command` message with the trace lines
 
-- [ ] **Step 3: Run tests**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator/chat
-~/.bun/bin/bun test
-```
-
-Expected: All tests pass.
-
-- [ ] **Step 4: Typecheck**
+### Step 6: Run tests
 
 ```bash
-~/.bun/bin/bun run typecheck
-```
-
-Expected: No errors.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator
-git add chat/src/QueryEngine.ts chat/src/backends/openai_compat.ts chat/src/commands/model.ts
-git commit -m "feat(chat): route gemini-* to Google, gpt-*/o* to OpenAI cloud, local as default"
-```
-
----
-
-## Task 3: Bun WebSocket Server
-
-**Files:**
-- Create: `chat/src/server.ts`
-- Create: `chat/tests/server_test.ts`
-- Modify: `chat/package.json` (scripts)
-
-**Protocol (client → server):**
-```
-{ "type": "message", "text": "user input" }
-{ "type": "abort" }
-```
-
-**Protocol (server → client):**
-```
-{ "type": "text_delta", "text": "..." }
-{ "type": "tool_use_start", "toolName": "...", "toolUseId": "..." }
-{ "type": "tool_use_end" }
-{ "type": "message_stop" }
-{ "type": "command_output", "text": "..." }
-{ "type": "command_clear" }
-{ "type": "error", "error": "..." }
-{ "type": "session_saved", "sessionId": "..." }
-```
-
-- [ ] **Step 1: Write failing smoke test**
-
-```typescript
-// chat/tests/server_test.ts
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test'
-
-const TEST_PORT = 8766
-
-let serverProcess: ReturnType<typeof Bun.spawn> | null = null
-
-beforeAll(async () => {
-  serverProcess = Bun.spawn(
-    [process.execPath, 'run', 'src/server.ts', '--port', String(TEST_PORT)],
-    { cwd: import.meta.dir + '/..', stderr: 'ignore', stdout: 'ignore' },
-  )
-  await new Promise(r => setTimeout(r, 500))
-})
-
-afterAll(() => {
-  serverProcess?.kill()
-})
-
-describe('chat WebSocket server', () => {
-  it('responds to /help with command_output event', async () => {
-    const ws = new WebSocket(`ws://localhost:${TEST_PORT}`)
-
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timeout')), 4000)
-      ws.addEventListener('open', () => {
-        ws.send(JSON.stringify({ type: 'message', text: '/help' }))
-      })
-      ws.addEventListener('error', reject)
-      ws.addEventListener('message', (e) => {
-        const data = JSON.parse(e.data as string) as { type: string }
-        if (data.type === 'command_output') {
-          clearTimeout(timer)
-          ws.close()
-          resolve()
-        }
-      })
-    })
-  })
-})
-```
-
-- [ ] **Step 2: Run to confirm FAIL**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator/chat
-~/.bun/bin/bun test tests/server_test.ts
-```
-
-Expected: FAIL — server.ts not found.
-
-- [ ] **Step 3: Create `chat/src/server.ts`**
-
-```typescript
-import { parseArgs } from 'util'
-import { QueryEngine } from './QueryEngine.js'
-import { setConfig } from './commands/config.js'
-import { setProjectContext } from './project/context.js'
-
-const { values } = parseArgs({
-  options: {
-    port:            { type: 'string',  short: 'p', default: '8765' },
-    dir:             { type: 'string',  short: 'd', default: process.cwd() },
-    'no-project':    { type: 'boolean', default: false },
-    'no-embeddings': { type: 'boolean', default: false },
-    model:           { type: 'string',  short: 'm' },
-    help:            { type: 'boolean', short: 'h', default: false },
-  },
-  allowPositionals: false,
-})
-
-if (values.help) {
-  console.log(`
-AI Orchestrator Chat WebSocket Server
-
-Usage: bun run serve [options]
-
-Options:
-  -p, --port <port>      Listen port (default: 8765)
-  -d, --dir <path>       Working directory for tools (default: cwd)
-  -m, --model <name>     Default model (default: from config)
-      --no-project       Disable project auto-detection
-      --no-embeddings    Disable embeddings context
-  -h, --help             Show help
-  `)
-  process.exit(0)
-}
-
-if (values.model)           setConfig({ model: values.model })
-if (values['no-project'])   setProjectContext({ enabled: false })
-if (values['no-embeddings'])setProjectContext({ embeddingsEnabled: false })
-
-const PORT = parseInt(values.port ?? '8765', 10)
-const WORKING_DIR = values.dir ?? process.cwd()
-
-interface ClientMessage {
-  type: 'message' | 'abort'
-  text?: string
-}
-
-type ExtendedWS = {
-  engine: QueryEngine
-  abort: AbortController | null
-}
-
-Bun.serve({
-  port: PORT,
-  fetch(req, server) {
-    if (server.upgrade(req)) return
-    return new Response('AI Orchestrator Chat WebSocket server', { status: 200 })
-  },
-  websocket: {
-    async open(ws) {
-      const ext = ws as typeof ws & ExtendedWS
-      ext.engine = new QueryEngine(WORKING_DIR)
-      await ext.engine.initialize()
-      ext.abort = null
-      console.log('[chat-server] client connected')
-    },
-
-    async message(ws, rawMessage) {
-      const ext = ws as typeof ws & ExtendedWS
-      let parsed: ClientMessage
-      try {
-        parsed = JSON.parse(rawMessage as string) as ClientMessage
-      } catch {
-        ws.send(JSON.stringify({ type: 'error', error: 'Invalid JSON' }))
-        return
-      }
-
-      if (parsed.type === 'abort') {
-        ext.abort?.abort()
-        ext.abort = null
-        return
-      }
-
-      if (parsed.type === 'message' && parsed.text) {
-        const abort = new AbortController()
-        ext.abort = abort
-        try {
-          for await (const event of ext.engine.submit(parsed.text, abort.signal)) {
-            if (abort.signal.aborted) break
-            ws.send(JSON.stringify(event))
-          }
-        } catch (err) {
-          ws.send(JSON.stringify({ type: 'error', error: (err as Error).message }))
-        } finally {
-          ext.abort = null
-        }
-      }
-    },
-
-    close(ws) {
-      const ext = ws as typeof ws & ExtendedWS
-      ext.abort?.abort()
-      console.log('[chat-server] client disconnected')
-    },
-  },
-})
-
-console.log(`[chat-server] listening on ws://localhost:${PORT}`)
-```
-
-- [ ] **Step 4: Add `serve` script to `chat/package.json`**
-
-The `serve` script already exists (added in Plan A). Verify it reads:
-```json
-"serve": "bun run src/server.ts"
-```
-
-If it was previously a stub or pointed elsewhere, update it to the above.
-
-- [ ] **Step 5: Run server test**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator/chat
-~/.bun/bin/bun test tests/server_test.ts
+bun test tests/repl_collapse_test.ts
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Run full test suite**
-
-```bash
-~/.bun/bin/bun test
-```
-
-Expected: All tests pass.
-
-- [ ] **Step 7: Commit**
+### Step 7: Commit
 
 ```bash
 cd /home/mcarls/projects/ai-orchestrator
-git add chat/src/server.ts chat/tests/server_test.ts
-git commit -m "feat(chat): add Bun WebSocket API server with per-connection QueryEngine"
+git add chat/src/screens/ chat/src/types/message.ts chat/tests/repl_collapse_test.ts
+git commit -m "feat(tui): collapsible messages, debug mode tool trace, keyboard navigation"
 ```
 
 ---
 
-## Task 4: FastAPI WebSocket Proxy
+## Task 3: WebUI Log Panel Enhancements
+
+**Goal:** Upgrade the existing log panel (`chat.js`) to show:
+1. Per-reply expandable tool trace sections (matching TUI debug mode)
+2. Tool call timeline: show all tools used in a reply in order, each expandable
+3. Tool input/output text in collapsible `<details>` elements per tool entry
+4. "Copy" button on each log entry for sharing/debugging
+5. Timestamps on all log entries
 
 **Files:**
-- Create: `orchestrator_web_viewer/orchestrator_web_viewer/api/chat.py`
-- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/main.py`
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/chat.js`
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/chat.css`
 
-- [ ] **Step 1: Install `websockets` if not present**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator/orchestrator_web_viewer
-grep -q websockets pyproject.toml && echo "already installed" || uv add websockets
+**StreamEvent additions needed** in `server.ts` and `types/message.ts`:
+```typescript
+// Add to StreamEvent union:
+| { type: 'tool_result'; toolUseId: string; content: string; isError: boolean; durationMs: number }
 ```
 
-- [ ] **Step 2: Create `orchestrator_web_viewer/orchestrator_web_viewer/api/chat.py`**
+The server already tracks tool results via `dispatchTools`; just needs to yield the result event
+with timing so the browser can display it.
 
-```python
-"""WebSocket proxy to the TypeScript chat agent server."""
-import asyncio
-import json
-import logging
+**Log entry structure (per tool call):**
 
-import websockets
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-
-log = logging.getLogger(__name__)
-
-router = APIRouter(prefix="/ws", tags=["chat"])
-
-CHAT_SERVER_URL = "ws://localhost:8765"
-
-
-@router.websocket("/chat")
-async def chat_proxy(client_ws: WebSocket) -> None:
-    """Proxy WebSocket connections transparently to the TypeScript chat server."""
-    await client_ws.accept()
-    log.info("Chat WebSocket client connected")
-    try:
-        async with websockets.connect(CHAT_SERVER_URL) as server_ws:
-            async def client_to_server() -> None:
-                try:
-                    while True:
-                        data = await client_ws.receive_text()
-                        await server_ws.send(data)
-                except WebSocketDisconnect:
-                    await server_ws.close()
-
-            async def server_to_client() -> None:
-                try:
-                    async for message in server_ws:
-                        await client_ws.send_text(str(message))
-                except websockets.exceptions.ConnectionClosed:
-                    pass
-
-            await asyncio.gather(client_to_server(), server_to_client())
-    except (OSError, websockets.exceptions.WebSocketException) as exc:
-        log.error("Chat server not reachable: %s", exc)
-        await client_ws.send_text(json.dumps({
-            "type": "error",
-            "error": "Chat agent server is not running. Start it with: cd chat && bun run serve",
-        }))
-        await client_ws.close()
-    finally:
-        log.info("Chat WebSocket client disconnected")
+```
+[⚙ tool-use]  BashTool  →  [✓ 42ms]              [▶ expand]
+  Input:  {"command": "ls /home/mcarls"}
+  Output: ".bash_history\n.bashrc\nprojects\n..."
 ```
 
-- [ ] **Step 3: Mount chat router in `main.py`**
+### Step 1: Add `tool_result` event to server.ts
 
-Read `orchestrator_web_viewer/orchestrator_web_viewer/main.py`. Add with the other api imports at the top:
-```python
-from orchestrator_web_viewer.api.chat import router as chat_router
-```
+In `chat/src/server.ts`, after `dispatchTools` returns, yield each result:
 
-Add with the other `app.include_router` calls:
-```python
-app.include_router(chat_router)
-```
-
-- [ ] **Step 4: Verify endpoint exists**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator/orchestrator_web_viewer
-uv run python -c "
-from orchestrator_web_viewer.main import app
-routes = [r.path for r in app.routes]
-print('ws/chat found:', any('ws/chat' in r for r in routes))
-"
-```
-
-Expected: `ws/chat found: True`
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd /home/mcarls/projects/ai-orchestrator
-git add orchestrator_web_viewer/orchestrator_web_viewer/api/chat.py
-git add orchestrator_web_viewer/orchestrator_web_viewer/main.py
-git commit -m "feat(webui): add FastAPI WebSocket proxy to TypeScript chat server"
-```
-
----
-
-## Task 5: Browser Chat Panel — HTML, CSS, JavaScript
-
-**Files:**
-- Create: `orchestrator_web_viewer/orchestrator_web_viewer/static/chat.css`
-- Create: `orchestrator_web_viewer/orchestrator_web_viewer/static/chat.js`
-- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/main.py` (add `/chat` route)
-
-**XSS safety contract:** Every piece of server-sourced text is assigned via `.textContent` only. No `innerHTML` assignments anywhere in `chat.js`. No `eval`. No `Function()`.
-
-- [ ] **Step 1: Add `/chat` route and `_CHAT_PAGE_HTML` to `main.py`**
-
-Add this near the other route definitions in `main.py`:
-
-```python
-from fastapi.responses import HTMLResponse
-
-_CHAT_PAGE_HTML = (
-    '<!DOCTYPE html><html lang="en"><head>'
-    '<meta charset="UTF-8">'
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-    '<title>AI Orchestrator - Chat Agent</title>'
-    '<link rel="stylesheet" href="/static/chat.css"></head><body>'
-    '<div id="app">'
-    '<header class="chat-header">'
-    '<h1>AI Orchestrator <span class="badge">Chat Agent</span></h1>'
-    '<div class="header-actions">'
-    '<select id="model-select">'
-    '<optgroup label="Local (LM Studio)">'
-    '<option value="gemma-4-27b-it">gemma-4-27b-it (research)</option>'
-    '<option value="devstral-small-2">devstral-small-2 (coding)</option>'
-    '<option value="qwen3-32b">qwen3-32b</option>'
-    '<option value="gemma-4-4b-it">gemma-4-4b-it (fast)</option>'
-    '</optgroup>'
-    '<optgroup label="Anthropic">'
-    '<option value="claude-sonnet-4-6">claude-sonnet-4-6</option>'
-    '<option value="claude-opus-4-6">claude-opus-4-6</option>'
-    '<option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>'
-    '</optgroup>'
-    '<optgroup label="Google">'
-    '<option value="gemini-2.5-flash">gemini-2.5-flash</option>'
-    '<option value="gemini-2.5-pro">gemini-2.5-pro</option>'
-    '</optgroup>'
-    '<optgroup label="OpenAI / Codex">'
-    '<option value="gpt-4o">gpt-4o</option>'
-    '<option value="gpt-4o-mini">gpt-4o-mini</option>'
-    '<option value="o3">o3</option>'
-    '</optgroup>'
-    '</select>'
-    '<button id="btn-clear">/clear</button>'
-    '<button id="btn-cost">/cost</button>'
-    '<span id="conn-status" class="status disconnected">disconnected</span>'
-    '</div></header>'
-    '<div id="message-list" aria-live="polite">'
-    '<div class="message system"><span class="role">System</span>'
-    '<p>Chat agent ready. Type /help for commands. Select a provider above.</p></div>'
-    '</div>'
-    '<div id="tool-progress"></div>'
-    '<form id="input-form" autocomplete="off">'
-    '<textarea id="chat-input" rows="2" '
-    'placeholder="Type a message or /help for commands (Shift+Enter for newline)"></textarea>'
-    '<button type="submit" id="btn-send">Send</button>'
-    '</form></div>'
-    '<script src="/static/chat.js"></script>'
-    '</body></html>'
-)
-
-@app.get("/chat", response_class=HTMLResponse)
-async def chat_page() -> HTMLResponse:
-    return HTMLResponse(content=_CHAT_PAGE_HTML)
-```
-
-- [ ] **Step 2: Create `chat.css`**
-
-```css
-/* orchestrator_web_viewer/orchestrator_web_viewer/static/chat.css */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-:root {
-  --bg: #0d1117; --surface: #161b22; --border: #30363d;
-  --text: #c9d1d9; --text-muted: #6e7681;
-  --accent: #58a6ff; --green: #3fb950; --yellow: #d29922; --red: #f85149;
+```typescript
+for (const result of toolResults) {
+  ws.send(JSON.stringify({
+    type: 'tool_result',
+    toolUseId: result.tool_use_id,
+    content: result.content.slice(0, 2000),  // cap to avoid huge WS frames
+    isError: result.is_error,
+    durationMs: result.durationMs ?? 0,
+  }))
 }
-body { background: var(--bg); color: var(--text); font-family: 'Cascadia Code', 'Fira Code', monospace; height: 100dvh; overflow: hidden; }
-#app { display: flex; flex-direction: column; height: 100dvh; }
-.chat-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface); flex-wrap: wrap; gap: 8px; }
-.chat-header h1 { font-size: 1rem; color: var(--accent); }
-.badge { font-size: 0.7rem; background: var(--accent); color: #000; border-radius: 4px; padding: 1px 6px; margin-left: 8px; }
-.header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.header-actions select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 3px 8px; border-radius: 4px; font-family: inherit; font-size: 0.8rem; cursor: pointer; }
-.header-actions select:focus { outline: none; border-color: var(--accent); }
-.header-actions button { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 3px 8px; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 0.8rem; }
-.header-actions button:hover { border-color: var(--accent); color: var(--accent); }
-.status { font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
-.status.connected { background: #1a3028; color: var(--green); }
-.status.disconnected { background: #2d1a1a; color: var(--red); }
-.status.streaming { background: #1e2d1a; color: var(--yellow); animation: pulse 1s ease-in-out infinite; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-#message-list { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth; }
-.message { padding: 10px 14px; border-radius: 8px; max-width: 90%; }
-.message.user { background: #1c2128; border: 1px solid var(--border); align-self: flex-end; }
-.message.assistant { background: var(--bg); border: 1px solid var(--border); align-self: flex-start; }
-.message.system { background: transparent; border: 1px solid var(--border); color: var(--text-muted); align-self: center; font-size: 0.85rem; text-align: center; max-width: 100%; }
-.message.command { background: #162032; border: 1px solid #1f3a5f; align-self: flex-start; font-size: 0.85rem; }
-.message.error { background: #2d1a1a; border: 1px solid var(--red); color: var(--red); align-self: flex-start; }
-.role { display: block; font-size: 0.7rem; font-weight: bold; margin-bottom: 4px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
-.message.user .role { color: var(--green); }
-.message.assistant .role { color: var(--accent); }
-.message p { white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
-.streaming-cursor::after { content: '|'; animation: pulse 0.8s ease-in-out infinite; color: var(--accent); }
-#tool-progress { padding: 0 16px; min-height: 0; }
-.tool-item { display: flex; align-items: center; gap: 8px; color: var(--yellow); font-size: 0.85rem; padding: 4px 0; }
-#input-form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--surface); }
-#chat-input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.9rem; resize: none; outline: none; }
-#chat-input:focus { border-color: var(--accent); }
-#chat-input:disabled { opacity: 0.5; cursor: not-allowed; }
-#btn-send { background: var(--accent); color: #000; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-family: inherit; font-size: 0.9rem; font-weight: bold; }
-#btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
 ```
 
-- [ ] **Step 3: Create `chat.js`**
+Update `ToolResult` type to include `durationMs?: number`.
+
+### Step 2: Update `chat.js` log handler
+
+Current: `handleLogEvent()` only shows tool_use_start.
+Updated: Track `currentToolEntry` per `toolUseId` and fill in the result on `tool_result` event.
+
+Add `<details>/<summary>` elements for input/output using only DOM APIs (no innerHTML):
 
 ```javascript
-// orchestrator_web_viewer/orchestrator_web_viewer/static/chat.js
-// XSS safety: all server-sourced content is set via .textContent ONLY. Never innerHTML.
-'use strict'
+function createToolLogEntry(toolName, toolUseId) {
+  const entry = document.createElement('div')
+  entry.className = 'log-entry tool-use'
+  entry.dataset.toolUseId = toolUseId
 
-var WS_URL = 'ws://' + location.host + '/ws/chat'
+  const summary = document.createElement('div')
+  summary.className = 'log-entry-summary'
 
-var messageList = document.getElementById('message-list')
-var inputEl = document.getElementById('chat-input')
-var sendBtn = document.getElementById('btn-send')
-var statusEl = document.getElementById('conn-status')
-var toolProgress = document.getElementById('tool-progress')
-var modelSelect = document.getElementById('model-select')
+  const icon = document.createElement('span')
+  icon.className = 'log-icon'
+  icon.textContent = '⚙'
+  summary.appendChild(icon)
 
-var ws = null
-var streaming = false
-var streamingMsgEl = null
-var activeTools = new Map()
+  const name = document.createElement('span')
+  name.className = 'log-tool-name'
+  name.textContent = toolName
+  summary.appendChild(name)
 
-// ── Connection ───────────────────────────────────────────────────────────────
+  const status = document.createElement('span')
+  status.className = 'log-tool-status'
+  status.textContent = '…'
+  entry.appendChild(summary)
+  entry.appendChild(status)
 
-function connect() {
-  ws = new WebSocket(WS_URL)
-  ws.addEventListener('open', function() { setStatus('connected') })
-  ws.addEventListener('close', function() { setStatus('disconnected'); setTimeout(connect, 2000) })
-  ws.addEventListener('error', function() { setStatus('disconnected') })
-  ws.addEventListener('message', function(e) {
-    handleEvent(JSON.parse(e.data))
-  })
+  // Details (expandable)
+  const details = document.createElement('details')
+  const inputPre = document.createElement('pre')
+  inputPre.className = 'log-tool-input'
+  const outputPre = document.createElement('pre')
+  outputPre.className = 'log-tool-output'
+  details.appendChild(inputPre)
+  details.appendChild(outputPre)
+  entry.appendChild(details)
+
+  return { entry, status, inputPre, outputPre }
 }
-
-function setStatus(state) {
-  statusEl.className = 'status ' + state
-  // Safe: hardcoded strings, not server data
-  statusEl.textContent = state
-}
-
-// ── Provider / model selection ───────────────────────────────────────────────
-
-modelSelect.addEventListener('change', function() {
-  var model = modelSelect.value
-  if (!model || streaming || !ws || ws.readyState !== 1) return
-  // Use slash command to switch model — processed server-side without API call
-  ws.send(JSON.stringify({ type: 'message', text: '/model ' + model }))
-  setStreaming(true)
-})
-
-// ── Event handler ────────────────────────────────────────────────────────────
-
-function handleEvent(event) {
-  if (event.type === 'text_delta') {
-    if (!streamingMsgEl) {
-      streamingMsgEl = appendMessage('assistant', '')
-      streamingMsgEl.querySelector('p').classList.add('streaming-cursor')
-    }
-    // Safe: .textContent only — server text never parsed as HTML
-    streamingMsgEl.querySelector('p').textContent += event.text
-    scrollBottom()
-    setStatus('streaming')
-
-  } else if (event.type === 'tool_use_start') {
-    var toolEl = document.createElement('div')
-    toolEl.className = 'tool-item'
-    // Safe: .textContent
-    toolEl.textContent = '\u2699\ufe0f ' + event.toolName + '\u2026'
-    toolEl.dataset.toolId = event.toolUseId
-    toolProgress.appendChild(toolEl)
-    activeTools.set(event.toolUseId, toolEl)
-
-  } else if (event.type === 'tool_use_end') {
-    activeTools.forEach(function(el) { el.remove() })
-    activeTools.clear()
-
-  } else if (event.type === 'message_stop') {
-    if (streamingMsgEl) {
-      streamingMsgEl.querySelector('p').classList.remove('streaming-cursor')
-      streamingMsgEl = null
-    }
-    setStreaming(false)
-    setStatus('connected')
-
-  } else if (event.type === 'command_output') {
-    // Safe: .textContent
-    appendMessage('command', event.text)
-    setStreaming(false)
-    setStatus('connected')
-
-  } else if (event.type === 'command_clear') {
-    messageList.textContent = ''
-    appendMessage('system', 'Conversation cleared.')
-    setStreaming(false)
-    setStatus('connected')
-
-  } else if (event.type === 'error') {
-    // Safe: .textContent
-    appendMessage('error', 'Error: ' + event.error)
-    setStreaming(false)
-    setStatus('connected')
-  }
-}
-
-// ── DOM helpers ──────────────────────────────────────────────────────────────
-
-var ROLE_LABELS = { user: 'You', assistant: 'AI', command: 'Command', error: 'Error', system: 'System' }
-
-function appendMessage(role, text) {
-  var div = document.createElement('div')
-  div.className = 'message ' + role
-
-  var roleEl = document.createElement('span')
-  roleEl.className = 'role'
-  // Safe: ROLE_LABELS values are hardcoded strings
-  roleEl.textContent = ROLE_LABELS[role] || role
-  div.appendChild(roleEl)
-
-  var p = document.createElement('p')
-  // Safe: server text via .textContent only
-  p.textContent = text
-  div.appendChild(p)
-
-  messageList.appendChild(div)
-  scrollBottom()
-  return div
-}
-
-function scrollBottom() {
-  messageList.scrollTop = messageList.scrollHeight
-}
-
-function setStreaming(active) {
-  streaming = active
-  inputEl.disabled = active
-  sendBtn.disabled = active
-  modelSelect.disabled = active
-  if (!active) inputEl.focus()
-}
-
-// ── Send ─────────────────────────────────────────────────────────────────────
-
-document.getElementById('input-form').addEventListener('submit', function(e) {
-  e.preventDefault()
-  doSend()
-})
-
-inputEl.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend() }
-})
-
-function doSend() {
-  var text = inputEl.value.trim()
-  if (!text || streaming || !ws || ws.readyState !== 1) return
-  appendMessage('user', text)
-  inputEl.value = ''
-  setStreaming(true)
-  ws.send(JSON.stringify({ type: 'message', text: text }))
-  scrollBottom()
-}
-
-// ── Header buttons ───────────────────────────────────────────────────────────
-
-document.getElementById('btn-clear').addEventListener('click', function() {
-  if (streaming || !ws || ws.readyState !== 1) return
-  ws.send(JSON.stringify({ type: 'message', text: '/clear' }))
-  setStreaming(true)
-})
-
-document.getElementById('btn-cost').addEventListener('click', function() {
-  if (streaming || !ws || ws.readyState !== 1) return
-  ws.send(JSON.stringify({ type: 'message', text: '/cost' }))
-  setStreaming(true)
-})
-
-// ── Boot ─────────────────────────────────────────────────────────────────────
-connect()
-inputEl.focus()
 ```
 
-- [ ] **Step 4: Add Chat Agent link to main navigation**
+### Step 3: Add CSS for expandable tool entries
 
-In `main.py`, find the root `GET /` handler that returns the main HTML page. Locate the navigation section and add a link using safe string concatenation (not innerHTML):
-
-```python
-# In the root HTML template nav section, add:
-'<a href="/chat">Chat Agent</a>'
+```css
+.log-entry details { margin: 4px 0 0 20px; }
+.log-entry summary { cursor: pointer; color: var(--color-muted); font-size: 0.8em; }
+.log-tool-input, .log-tool-output {
+  font-size: 0.75em;
+  background: var(--color-surface-2);
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
 ```
 
-- [ ] **Step 5: Manual end-to-end test**
+### Step 4: Run full browser smoke test
 
-Terminal 1:
-```bash
-cd /home/mcarls/projects/ai-orchestrator/chat
-bun run serve
-```
+Start the stack locally and manually verify:
+- Tool entries in log expand on click
+- Input/output shown with correct content
+- Copy button copies entry text to clipboard
 
-Terminal 2:
-```bash
-cd /home/mcarls/projects/ai-orchestrator/orchestrator_web_viewer
-uv run python -m orchestrator_web_viewer.main
-```
-
-Browser: `http://localhost:8000/chat`
-
-Verify:
-1. Status shows "connected" (green)
-2. Provider dropdown is visible with Local/Anthropic/Google/OpenAI groups
-3. Selecting "gemma-4-27b-it" and sending a message routes to LM Studio
-4. `/clear` button works
-5. `/cost` button shows token usage
-6. Selecting `claude-sonnet-4-6` and sending a message routes to Anthropic (if `ANTHROPIC_API_KEY` set)
-7. All text arrives via streaming cursor
-
-- [ ] **Step 6: Commit**
+### Step 5: Commit
 
 ```bash
-cd /home/mcarls/projects/ai-orchestrator
+git add chat/src/server.ts orchestrator_web_viewer/orchestrator_web_viewer/static/chat.js
 git add orchestrator_web_viewer/orchestrator_web_viewer/static/chat.css
-git add orchestrator_web_viewer/orchestrator_web_viewer/static/chat.js
-git add orchestrator_web_viewer/orchestrator_web_viewer/main.py
-git commit -m "feat(webui): add browser chat panel with provider selector (local/Claude/Gemini/OpenAI)"
+git commit -m "feat(webui): expandable tool trace in log panel with input/output details"
 ```
 
 ---
 
-## Task 6: Root Workspace Scripts + README
+## Task 4: WebUI Model Dropdown — Search/Filter + Group Expand
+
+**Goal:** The model selector is already populated dynamically. Now:
+1. Add a text filter input above the dropdown that live-filters options by name
+2. Group headers are collapsible (click to show/hide that group)
+3. Show a `●` indicator on groups that have loaded LM Studio models
+4. "Refresh" button already exists — ensure it re-populates correctly
+5. (Optional/future) HuggingFace search deferred to Task 9
 
 **Files:**
-- Modify: `/home/mcarls/projects/ai-orchestrator/package.json`
-- Modify: `README.md`
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/chat.js`
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/chat.css`
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/index.html`
 
-- [ ] **Step 1: Update root `package.json`**
+**Implementation:**
+Replace the `<select>` with a custom dropdown panel (div-based) to support:
+- Text search box at top
+- Collapsible group rows
+- Click model name to select
 
-Read `/home/mcarls/projects/ai-orchestrator/package.json` and update the scripts:
+**Key constraint:** Still XSS-safe — all model names/labels via `.textContent` only.
 
-```json
-{
-  "name": "ai-orchestrator",
-  "version": "0.1.0",
-  "private": true,
-  "workspaces": ["chat"],
-  "scripts": {
-    "chat":       "cd chat && ~/.bun/bin/bun run src/cli.ts",
-    "chat:serve": "cd chat && ~/.bun/bin/bun run src/server.ts",
-    "chat:test":  "cd chat && ~/.bun/bin/bun test"
+```html
+<!-- Replace <select id="model-select"> with: -->
+<div class="model-picker">
+  <input type="text" id="model-filter" placeholder="Filter models…" autocomplete="off">
+  <div id="model-dropdown" class="model-dropdown" hidden>
+    <!-- populated by JS -->
+  </div>
+  <div id="model-selected" class="model-selected-display">
+    <!-- shows current selection -->
+  </div>
+</div>
+```
+
+### Step 1: Update `populateModelSelect()` in chat.js
+
+Current: builds `<option>` elements inside a `<select>`.
+New: builds group sections with model rows inside `#model-dropdown`.
+
+Groups come from the `group` field already in the `/api/chat/models` response.
+
+### Step 2: Filter logic
+
+```javascript
+document.getElementById('model-filter').addEventListener('input', (e) => {
+  const query = e.target.value.toLowerCase()
+  for (const row of document.querySelectorAll('.model-option')) {
+    const match = row.dataset.modelId.toLowerCase().includes(query)
+      || row.dataset.modelLabel.toLowerCase().includes(query)
+    row.hidden = !match
   }
-}
+})
 ```
 
-- [ ] **Step 2: Update README provider table**
-
-In `README.md`, find the **Local GPU Models** section added in Plan C and add a "Supported providers" subsection after the model stack table:
-
-```markdown
-### All Supported Providers
-
-The `ai` TUI and web chat UI support these providers via the same interface:
-
-| Provider | Models | Auth Required |
-|----------|--------|---------------|
-| Local (LM Studio) | `gemma-4-27b-it`, `devstral-small-2`, `qwen3-32b`, ... | None |
-| Anthropic | `claude-sonnet-4-6`, `claude-opus-4-6`, ... | `ANTHROPIC_API_KEY` |
-| Google Gemini | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-flash` | `GEMINI_API_KEY` |
-| OpenAI / Codex | `gpt-4o`, `gpt-4o-mini`, `o3`, `o1` | `OPENAI_API_KEY` |
-
-Switch provider in TUI: `/model gemini-2.5-flash`
-Switch provider in web UI: use the dropdown selector
-```
-
-Also add a quick-start entry to the Quick Reference section at the top:
-```bash
-# Start web chat UI (requires chat server running separately)
-bun run chat:serve   # terminal 1: TypeScript WS server
-uv run python -m orchestrator_web_viewer.main  # terminal 2: FastAPI
-# Open http://localhost:8000/chat
-```
-
-- [ ] **Step 3: Final test run**
+### Step 3: Run tests / smoke test
 
 ```bash
-cd /home/mcarls/projects/ai-orchestrator/chat
-~/.bun/bin/bun test
+# Python test: check models endpoint still returns correct shape
+cd /home/mcarls/projects/ai-orchestrator/orchestrator_web_viewer
+uv run pytest tests/ -v -k "chat_models"
 ```
 
-Expected: All tests pass.
-
-- [ ] **Step 4: Commit**
+### Step 4: Commit
 
 ```bash
-cd /home/mcarls/projects/ai-orchestrator
-git add package.json README.md
-git commit -m "docs: document multi-provider chat support and web UI setup"
+git add orchestrator_web_viewer/orchestrator_web_viewer/static/
+git commit -m "feat(webui): replace model <select> with filterable custom dropdown"
 ```
 
 ---
 
-## Self-Review
+## Task 5: Memory System Infrastructure
 
-### Spec Coverage
+**Goal:** Build the database schema and API layer for per-project and global memories.
+The existing stack already has PostgreSQL with pgvector — we add a `chat_memories` table
+and API endpoints to create, list, delete, and get stats.
 
-| Requirement | Covered by |
-|-------------|------------|
-| Local LM Studio (primary) | Plan C prerequisite + routing preserved |
-| Claude in web UI | Task 2 routing + Task 5 model dropdown |
-| Gemini in TUI + web UI | Task 1 backend + Task 2 routing + Task 5 dropdown |
-| OpenAI/Codex in TUI + web UI | Task 2 routing (openai_compat.ts via api.openai.com) + Task 5 |
-| GitHub Copilot | Omitted — no public streaming chat API |
-| Provider selector in web UI | Task 5 — `<select id="model-select">` sends `/model` command |
-| WebSocket server | Task 3 — `chat/src/server.ts` |
-| FastAPI proxy | Task 4 |
-| Browser chat panel | Task 5 |
-| XSS safety | Task 5 — all server text via `.textContent` only |
-| Streaming responses in browser | Task 5 — `text_delta` events update textContent live |
-| Tool progress in browser | Task 5 — `tool_use_start/end` events |
-| `/clear` and `/cost` buttons | Task 5 |
-| `GEMINI_API_KEY` auth | Task 1 — runtime check with clear error |
-| `OPENAI_API_KEY` auth | Task 2 — env var picked up by `openai_compat.ts` |
+**Design:**
+- `chat_memories` table: `id`, `project_id` (nullable = global), `content`, `embedding` (vector),
+  `source` (chat | manual | auto), `created_at`, `updated_at`
+- `memory_groups` table: many-to-many `(group_id, memory_id)` for shared memory groups
+- `memory_group_projects` table: which projects belong to each group
 
-### Placeholder Scan
+**Files:**
+- Create: `docker/postgres/init-scripts/03_chat_memories.sql`
+- Create: `orchestrator_web_viewer/orchestrator_web_viewer/api/chat_memory.py`
+- Create: `orchestrator_web_viewer/orchestrator_web_viewer/tests/chat_memory_test.py`
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/main.py` — mount router
 
-All code blocks are complete. No TBDs.
+### Step 1: Write failing tests
 
-### Type Consistency
+```python
+# orchestrator_web_viewer/orchestrator_web_viewer/tests/chat_memory_test.py
+import pytest
+from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock, patch
 
-- `queryLoopGemini` signature: `(messages: Message[], tools: Tool[], options: QueryOptions)` — same as `queryLoop` and `queryLoopOpenAI`
-- `toGeminiHistory` returns `Content[]` from `@google/generative-ai` — not mixed with other types
-- `assistantContent` in `gemini_backend.ts` is cast to `ContentBlock[]` — same pattern as `openai_compat.ts`
-- `loopFn` in `QueryEngine` is assigned one of three functions with identical signatures, then called with `loopOptions` — type-safe
+# Test that the memory endpoints return expected shapes
+def test_memory_list_returns_list(client):
+    with patch('orchestrator_web_viewer.api.chat_memory.db_list_memories',
+               new_callable=AsyncMock, return_value=[]):
+        resp = client.get('/api/chat/memory')
+        assert resp.status_code == 200
+        assert isinstance(resp.json()['memories'], list)
 
-### Known Omissions
+def test_memory_stats_has_counts(client):
+    mock_stats = {'global_count': 5, 'global_bytes': 1024,
+                  'projects': [{'project_id': 'p1', 'count': 3, 'bytes': 512}]}
+    with patch('orchestrator_web_viewer.api.chat_memory.db_memory_stats',
+               new_callable=AsyncMock, return_value=mock_stats):
+        resp = client.get('/api/chat/memory/stats')
+        assert resp.status_code == 200
+        data = resp.json()
+        assert 'global_count' in data
+        assert 'projects' in data
+```
 
-- **GitHub Copilot**: `gh copilot suggest/explain` are non-streaming one-shot commands, not suitable for chat. If GitHub releases a Copilot streaming API, a `copilot_backend.ts` can be added without changing anything else.
-- **Per-connection model state**: Global `setConfig()` module state means all WS connections share the same model. Fine for single-user; multi-user would require per-connection config (tracked as future work).
+### Step 2: Create `docker/postgres/init-scripts/03_chat_memories.sql`
+
+```sql
+-- Chat memory storage with pgvector embeddings
+CREATE TABLE IF NOT EXISTS chat_memories (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id  TEXT,                         -- NULL = global memory
+    content     TEXT NOT NULL,
+    embedding   vector(768),                  -- nomic-embed-text-v1.5 dimensions
+    source      TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'manual' | 'auto'
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS chat_memories_project_idx ON chat_memories (project_id);
+CREATE INDEX IF NOT EXISTS chat_memories_embedding_idx
+    ON chat_memories USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+-- Memory groups (shared across projects)
+CREATE TABLE IF NOT EXISTS memory_groups (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL,
+    description TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS memory_group_members (
+    group_id    UUID REFERENCES memory_groups(id) ON DELETE CASCADE,
+    memory_id   UUID REFERENCES chat_memories(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, memory_id)
+);
+
+CREATE TABLE IF NOT EXISTS memory_group_projects (
+    group_id    UUID REFERENCES memory_groups(id) ON DELETE CASCADE,
+    project_id  TEXT NOT NULL,
+    PRIMARY KEY (group_id, project_id)
+);
+```
+
+### Step 3: Create `orchestrator_web_viewer/orchestrator_web_viewer/api/chat_memory.py`
+
+```python
+"""Chat memory CRUD and stats endpoints."""
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any
+
+import asyncpg
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+log = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/chat/memory", tags=["chat-memory"])
+
+
+class SaveMemoryRequest(BaseModel):
+    content: str
+    project_id: str | None = None  # None = global
+    source: str = "chat"
+
+
+async def _get_pool() -> asyncpg.Pool:
+    """Return a fresh connection pool using KO_WEB env vars."""
+    return await asyncpg.create_pool(
+        host=os.getenv("KO_WEB_POSTGRES_HOST", "localhost"),
+        port=int(os.getenv("KO_WEB_POSTGRES_PORT", "5432")),
+        user=os.getenv("KO_WEB_POSTGRES_USER", "km_user"),
+        password=os.getenv("KO_WEB_POSTGRES_PASSWORD", ""),
+        database=os.getenv("KO_WEB_POSTGRES_DB", "knowledge_manager"),
+        min_size=1,
+        max_size=5,
+    )
+
+
+async def db_list_memories(project_id: str | None = None) -> list[dict[str, Any]]:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        if project_id is None:
+            rows = await conn.fetch(
+                "SELECT id, project_id, content, source, created_at "
+                "FROM chat_memories ORDER BY created_at DESC LIMIT 200"
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT id, project_id, content, source, created_at "
+                "FROM chat_memories WHERE project_id = $1 OR project_id IS NULL "
+                "ORDER BY created_at DESC LIMIT 200",
+                project_id,
+            )
+    await pool.close()
+    return [dict(r) for r in rows]
+
+
+async def db_memory_stats() -> dict[str, Any]:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        global_row = await conn.fetchrow(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(octet_length(content)),0) as bytes "
+            "FROM chat_memories WHERE project_id IS NULL"
+        )
+        project_rows = await conn.fetch(
+            "SELECT project_id, COUNT(*) as cnt, "
+            "COALESCE(SUM(octet_length(content)),0) as bytes "
+            "FROM chat_memories WHERE project_id IS NOT NULL "
+            "GROUP BY project_id ORDER BY cnt DESC"
+        )
+    await pool.close()
+    return {
+        "global_count": global_row["cnt"],
+        "global_bytes": global_row["bytes"],
+        "projects": [
+            {"project_id": r["project_id"], "count": r["cnt"], "bytes": r["bytes"]}
+            for r in project_rows
+        ],
+    }
+
+
+@router.get("")
+async def list_memories(project_id: str | None = None) -> dict[str, Any]:
+    """List memories, optionally filtered by project."""
+    try:
+        memories = await db_list_memories(project_id)
+        return {"memories": memories}
+    except Exception as exc:
+        log.error("list_memories failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/stats")
+async def memory_stats() -> dict[str, Any]:
+    """Return memory counts and storage bytes per project + global."""
+    try:
+        return await db_memory_stats()
+    except Exception as exc:
+        log.error("memory_stats failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("")
+async def save_memory(req: SaveMemoryRequest) -> dict[str, Any]:
+    """Save a new memory entry."""
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="content must not be empty")
+    try:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO chat_memories (content, project_id, source) "
+                "VALUES ($1, $2, $3) RETURNING id, created_at",
+                req.content, req.project_id, req.source,
+            )
+        await pool.close()
+        return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
+    except Exception as exc:
+        log.error("save_memory failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.delete("/{memory_id}")
+async def delete_memory(memory_id: str) -> dict[str, str]:
+    """Delete a memory by ID."""
+    try:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM chat_memories WHERE id = $1", memory_id
+            )
+        await pool.close()
+        if result == "DELETE 0":
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return {"status": "deleted"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+```
+
+### Step 4: Mount router in `main.py`
+
+```python
+from orchestrator_web_viewer.api.chat_memory import router as chat_memory_router
+app.include_router(chat_memory_router)
+```
+
+### Step 5: Add `asyncpg` to dependencies
+
+```bash
+cd /home/mcarls/projects/ai-orchestrator/orchestrator_web_viewer
+uv add asyncpg
+```
+
+### Step 6: Run tests
+
+```bash
+uv run pytest orchestrator_web_viewer/tests/chat_memory_test.py -v
+```
+
+### Step 7: Commit
+
+```bash
+git add docker/postgres/init-scripts/03_chat_memories.sql
+git add orchestrator_web_viewer/orchestrator_web_viewer/api/chat_memory.py
+git add orchestrator_web_viewer/orchestrator_web_viewer/tests/chat_memory_test.py
+git add orchestrator_web_viewer/orchestrator_web_viewer/main.py
+git commit -m "feat(memory): add chat_memories table, CRUD API, and stats endpoint"
+```
+
+---
+
+## Task 6: WebUI Memory Tab
+
+**Goal:** The existing Memory tab (`memory.js`) shows orchestrator memories. Extend it with:
+1. A "Chat Memories" section at the top showing global + per-project stats (count, KB/MB/GB)
+2. A browsable list of memories (paginated, filterable by project)
+3. Delete button per memory entry
+4. "Save as global memory" / "Save to project" buttons (handy for manual entry too)
+5. Visual indicator: storage bar showing global vs per-project proportions
+
+**Files:**
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/memory.js`
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/index.html`
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/style.css`
+
+**Stats display format:**
+```
+Chat Memories
+  Global:     42 entries  /  83 KB
+  project-X:  17 entries  /  34 KB
+  project-Y:   8 entries  /  12 KB
+```
+
+**Storage formatting helper:**
+```javascript
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024*1024)).toFixed(1)} MB`
+  return `${(bytes / (1024*1024*1024)).toFixed(2)} GB`
+}
+```
+
+### Step 1: Add memory stats section to Memory tab in `index.html`
+
+Add inside `<div id="memory-view" class="view">` near the top:
+
+```html
+<section id="chat-memory-stats" class="card">
+  <h3>Chat Memories</h3>
+  <div id="chat-memory-stats-body">Loading…</div>
+  <div id="chat-memory-list-container">
+    <input type="text" id="chat-memory-filter" placeholder="Filter by project or content…">
+    <div id="chat-memory-list"></div>
+  </div>
+</section>
+```
+
+### Step 2: Load stats and entries in `memory.js`
+
+```javascript
+async function loadChatMemoryStats() {
+  const resp = await fetch('/api/chat/memory/stats')
+  if (!resp.ok) return
+  const data = await resp.json()
+
+  const body = document.getElementById('chat-memory-stats-body')
+  clearChildren(body)
+
+  const globalRow = document.createElement('div')
+  globalRow.className = 'memory-stat-row'
+  const globalLabel = document.createElement('span')
+  globalLabel.textContent = 'Global:'
+  const globalVal = document.createElement('span')
+  globalVal.textContent = `${data.global_count} entries / ${formatBytes(data.global_bytes)}`
+  globalRow.appendChild(globalLabel)
+  globalRow.appendChild(globalVal)
+  body.appendChild(globalRow)
+
+  for (const proj of data.projects) {
+    const row = document.createElement('div')
+    row.className = 'memory-stat-row'
+    const lbl = document.createElement('span')
+    lbl.textContent = proj.project_id + ':'
+    const val = document.createElement('span')
+    val.textContent = `${proj.count} entries / ${formatBytes(proj.bytes)}`
+    row.appendChild(lbl)
+    row.appendChild(val)
+    body.appendChild(row)
+  }
+}
+```
+
+### Step 3: Commit
+
+```bash
+git add orchestrator_web_viewer/orchestrator_web_viewer/static/
+git commit -m "feat(webui): chat memory stats and browse panel in Memory tab"
+```
+
+---
+
+## Task 7: Chat ↔ Memory Integration
+
+**Goal:**
+1. In the WebUI chat, after any message, user can right-click or use a button to "Save as memory"
+2. A `/remember <text>` slash command in both TUI and WebUI saves text as global memory
+3. A `/remember --project <id> <text>` saves to project
+4. The chat can be told "remember that X" and the agent calls a `SaveMemoryTool`
+5. When a chat session starts with a project context, relevant memories are retrieved and prepended to the system prompt
+
+**Files:**
+- Create: `chat/src/tools/SaveMemoryTool.ts`
+- Create: `chat/src/commands/remember.ts`
+- Modify: `chat/src/QueryEngine.ts` — register SaveMemoryTool, inject memories into system prompt
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/chat.js` — "Save" button on messages
+- Create: `chat/tests/tools/SaveMemoryTool_test.ts`
+
+**`SaveMemoryTool`:**
+```typescript
+// Calls the FastAPI /api/chat/memory endpoint via fetch
+// Input: { content: string, project_id?: string }
+// On success: returns "Memory saved."
+// The tool is always available — the model decides when to use it based on "remember that X" intent
+```
+
+**`/remember` command:**
+```typescript
+// /remember <text> → saves as global
+// /remember --project <id> <text> → saves to project
+// Yields { type: 'command_output', text: 'Memory saved.' }
+```
+
+### Step 1: Write test for SaveMemoryTool
+
+```typescript
+// chat/tests/tools/SaveMemoryTool_test.ts
+import { describe, it, expect, mock } from 'bun:test'
+import { SaveMemoryTool } from '../../src/tools/SaveMemoryTool.js'
+
+describe('SaveMemoryTool', () => {
+  it('calls the memory API endpoint', async () => {
+    const calls: unknown[] = []
+    global.fetch = mock(async (url: string, opts: RequestInit) => {
+      calls.push({ url, body: JSON.parse(opts.body as string) })
+      return new Response(JSON.stringify({ id: 'abc', created_at: '2026-01-01' }), { status: 200 })
+    }) as typeof fetch
+
+    const tool = new SaveMemoryTool('http://localhost:3001')
+    const ctx = { abortSignal: new AbortController().signal, workingDir: '/tmp' }
+    const result = await tool.execute({ content: 'test memory', project_id: null }, ctx)
+    expect(result).toBe('Memory saved.')
+    expect(calls).toHaveLength(1)
+  })
+
+  it('returns error message on API failure', async () => {
+    global.fetch = mock(async () =>
+      new Response('{}', { status: 503 })
+    ) as typeof fetch
+
+    const tool = new SaveMemoryTool('http://localhost:3001')
+    const ctx = { abortSignal: new AbortController().signal, workingDir: '/tmp' }
+    const result = await tool.execute({ content: 'fail' }, ctx)
+    expect(result).toContain('Error')
+  })
+})
+```
+
+### Step 2: Create `chat/src/tools/SaveMemoryTool.ts`
+
+```typescript
+import type { Tool, ToolDefinition, ToolUseContext } from '../types/tool.js'
+
+interface SaveMemoryInput {
+  content: string
+  project_id?: string | null
+}
+
+export class SaveMemoryTool implements Tool {
+  constructor(private readonly apiBase: string = 'http://localhost:3001') {}
+
+  definition(): ToolDefinition {
+    return {
+      name: 'SaveMemory',
+      description: 'Save a piece of information to long-term memory. Use when the user asks you to remember something.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: 'The information to remember' },
+          project_id: { type: 'string', description: 'Project scope (omit for global memory)' },
+        },
+        required: ['content'],
+      },
+    }
+  }
+
+  isConcurrencySafe(_input: unknown): boolean { return true }
+
+  async execute(input: unknown, ctx: ToolUseContext): Promise<string> {
+    const { content, project_id } = input as SaveMemoryInput
+    try {
+      const resp = await fetch(`${this.apiBase}/api/chat/memory`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, project_id: project_id ?? null, source: 'chat' }),
+        signal: ctx.abortSignal,
+      })
+      if (!resp.ok) return `Error saving memory: HTTP ${resp.status}`
+      return 'Memory saved.'
+    } catch (err) {
+      return `Error saving memory: ${(err as Error).message}`
+    }
+  }
+}
+```
+
+### Step 3: Register in QueryEngine and inject context
+
+In `QueryEngine.ts` constructor, add `SaveMemoryTool` to `this.tools`.
+
+In `submit()`, before building the query loop, if `this.projectId` is set:
+1. Fetch recent memories for this project: `GET /api/chat/memory?project_id=X`
+2. Prepend top N to system prompt: `\n\n## Relevant memories:\n- ${memory.content}\n...`
+
+### Step 4: Run tests
+
+```bash
+cd /home/mcarls/projects/ai-orchestrator/chat
+bun test tests/tools/SaveMemoryTool_test.ts
+```
+
+### Step 5: Commit
+
+```bash
+git add chat/src/tools/SaveMemoryTool.ts chat/src/commands/remember.ts
+git add chat/tests/tools/SaveMemoryTool_test.ts
+git commit -m "feat(memory): SaveMemoryTool + /remember command + project context injection"
+```
+
+---
+
+## Task 8: Shared Memory Groups
+
+**Goal:** Allow multiple projects to share a named memory group. Any memory saved to a
+shared group is visible to all projects in that group.
+
+**Files:**
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/api/chat_memory.py` — group endpoints
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/memory.js` — group management UI
+
+**New endpoints:**
+- `POST /api/chat/memory/groups` — create group `{ name, description }`
+- `GET /api/chat/memory/groups` — list all groups with member projects
+- `POST /api/chat/memory/groups/{id}/projects` — add project to group
+- `DELETE /api/chat/memory/groups/{id}/projects/{project_id}` — remove project from group
+
+**Memory retrieval update:** When loading memories for a project, also include memories from
+any groups the project belongs to.
+
+---
+
+## Task 9: HuggingFace Model Browser
+
+**Goal:** Add a "Download Model" panel within the model picker that lets users:
+1. Search HuggingFace for GGUF models (filtered by `gguf` tag, sorted by downloads)
+2. See model card info (size, downloads, last updated)
+3. Click "Open in LM Studio" — constructs the LM Studio deep link or shows the HuggingFace URL to paste
+
+**Why not auto-download?** LM Studio handles downloads itself. We just need to surface the
+model so the user can copy the repo ID and paste it into LM Studio's search. Or if LM Studio
+exposes a local download API, call it directly.
+
+**Files:**
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/api/chat.py` — HF search proxy endpoint
+- Modify: `orchestrator_web_viewer/orchestrator_web_viewer/static/chat.js` — model browser panel
+
+**New endpoint: `GET /api/chat/hf-models?q=gemma&limit=10`**
+
+```python
+@router.get("/api/chat/hf-models")
+async def search_hf_models(q: str = "", limit: int = 10) -> dict:
+    """Proxy search to HuggingFace Hub API filtered to GGUF models."""
+    url = "https://huggingface.co/api/models"
+    params = {
+        "search": q,
+        "filter": "gguf",
+        "sort": "downloads",
+        "direction": -1,
+        "limit": limit,
+        "full": False,
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        models = resp.json()
+    return {
+        "models": [
+            {
+                "id": m.get("modelId", ""),
+                "downloads": m.get("downloads", 0),
+                "tags": m.get("tags", []),
+                "last_modified": m.get("lastModified", ""),
+            }
+            for m in models
+        ]
+    }
+```
+
+**Browser UI:** A "🔍 Find models" button in the chat toolbar opens a search panel. Results
+show model ID + downloads. Clicking a result: copies model ID + shows instructions to load
+in LM Studio. If LM Studio's local API supports loading a model by repo ID, call it directly.
+
+---
+
+## Task 10: Agent Benchmark Runner
+
+**Goal:** Provide infrastructure to run standardized AI benchmark tests against our agent
+and compare scores across models.
+
+**Design:**
+- Benchmark tests are JSON files: `benchmarks/<suite-name>/<test-name>.json`
+  - Format: `{ "prompt": "...", "expected_contains": [...], "expected_not_contains": [...],
+    "max_turns": 3, "timeout_s": 60 }`
+- A `RunBenchmark` slash command in the TUI: `/benchmark run <suite> --model <name>`
+- A benchmark API endpoint: `POST /api/chat/benchmark` — runs a suite, returns scores
+- A benchmark results tab in the WebUI showing pass/fail per test, per model, with timestamps
+- Results stored in PostgreSQL: `benchmark_results` table
+
+**Files:**
+- Create: `benchmarks/` directory with example suites
+- Create: `chat/src/commands/benchmark.ts`
+- Create: `orchestrator_web_viewer/orchestrator_web_viewer/api/benchmark.py`
+- Create: `docker/postgres/init-scripts/04_benchmark_results.sql`
+
+**Suggested initial benchmark suites to download and adapt:**
+- HumanEval (coding) — Python function completion
+- MMLU (knowledge) — multiple-choice science/humanities
+- HellaSwag (commonsense) — sentence completion
+- Custom "agent loop" suite — tests that require tool use: bash commands, file reads, grep
+
+**`benchmark_results` schema:**
+```sql
+CREATE TABLE IF NOT EXISTS benchmark_results (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    suite_name  TEXT NOT NULL,
+    model_id    TEXT NOT NULL,
+    test_name   TEXT NOT NULL,
+    passed      BOOLEAN NOT NULL,
+    score       FLOAT,
+    duration_ms INTEGER,
+    response    TEXT,
+    run_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX ON benchmark_results (suite_name, model_id, run_at);
+```
+
+The benchmark tab in the WebUI shows a comparison table:
+```
+Suite: HumanEval          claude-sonnet  qwen3-32b  gemini-2.5  @claude
+─────────────────────────────────────────────────────────────────────────
+pass@1                        72%          68%          74%        71%
+avg latency                  2.1s         0.8s         1.9s       3.4s
+tool-call accuracy            94%          89%          91%        96%
+```
+
+---
+
+## Provider Routing Summary (Current + New)
+
+| Model prefix / name | Backend | Notes |
+|---|---|---|
+| `@claude` | `claude` CLI subprocess | No API key needed |
+| `@gemini` | `gemini` CLI subprocess | No API key needed |
+| `@codex` | `codex` CLI subprocess | No API key needed |
+| `@copilot` | `gh copilot` subprocess | Requires `gh` auth |
+| `gemini-*` | Google Generative AI SDK | `GEMINI_API_KEY` |
+| `claude-*` | Anthropic SDK | `ANTHROPIC_API_KEY` |
+| `gpt-*`, `o1-*`, `o3-*` | OpenAI SDK → api.openai.com | `OPENAI_API_KEY` |
+| anything else | OpenAI-compat → LM Studio | No key, local only |
+
+---
+
+## Security Invariants (Carry Forward)
+
+- All DOM manipulation in `chat.js` and `memory.js` uses `.textContent` and `createElement` — never `innerHTML`
+- Server-sent model names, memory content, and tool output must never be assigned via innerHTML
+- `SaveMemoryTool` input is validated server-side (non-empty content)
+- Benchmark prompts from JSON files are not eval'd — they are strings passed to the agent

@@ -5,8 +5,8 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 # Install dependencies first (cache layer)
-COPY chat/package.json chat/bun.lock* ./
-RUN bun install --frozen-lockfile --production
+COPY chat/package.json ./
+RUN bun install --production
 
 # Copy source
 COPY chat/src ./src
