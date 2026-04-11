@@ -7,16 +7,36 @@ const ANTHROPIC_MODELS = [
   'claude-haiku-4-5-20251001',
 ]
 
-// Local model IDs — match paths shown in `lms ls` (run: /mnt/c/Users/<you>/.lmstudio/bin/lms.exe ls)
-const LOCAL_MODELS = [
-  'qwen/qwen3-coder-next',                    // Coding / agentic (80B)
-  'openai/gpt-oss-20b',                       // General purpose (20B)
-  'qwen3-30b-a3b-abliterated',                // General / reasoning (30B MoE)
-  'deepseek/deepseek-r1-0528-qwen3-8b',       // Reasoning (8B)
-  'mistralai/ministral-3-14b-reasoning',      // Reasoning (14B)
-  'meta-llama-3.1-8b-instruct-abliterated',   // Fast general (8B)
-  'qwen3-4b-abliterated',                     // Fast / router (4B)
+const GEMINI_MODELS = [
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
 ]
+
+const OPENAI_MODELS = [
+  'gpt-4o',
+  'gpt-4o-mini',
+  'o3',
+  'o1',
+]
+
+// Local model IDs — match paths shown in `lms ls`
+const LOCAL_MODELS = [
+  'qwen/qwen3-coder-next',
+  'openai/gpt-oss-20b',
+  'qwen3-30b-a3b-abliterated',
+  'deepseek/deepseek-r1-0528-qwen3-8b',
+  'mistralai/ministral-3-14b-reasoning',
+  'meta-llama-3.1-8b-instruct-abliterated',
+  'qwen3-4b-abliterated',
+]
+
+function getBackendLabel(model: string, localUrl: string): string {
+  if (model.startsWith('gemini-')) return 'Google Generative AI (GEMINI_API_KEY)'
+  if (model.startsWith('claude-')) return 'Anthropic API (ANTHROPIC_API_KEY)'
+  if (/^(gpt-|o1-|o3-)/.test(model)) return 'OpenAI API (OPENAI_API_KEY)'
+  return `local LM Studio (${localUrl})`
+}
 
 export class ModelCommand implements SlashCommand {
   name = 'model'
@@ -26,16 +46,11 @@ export class ModelCommand implements SlashCommand {
   async execute(args: string, _ctx: CommandContext): Promise<CommandResult> {
     const name = args.trim()
     const cfg = getConfig()
-    const isLocal = !cfg.model.startsWith('claude-')
-    const backend = isLocal ? `local (${cfg.localUrl})` : 'Anthropic API'
+    const backend = getBackendLabel(cfg.model, cfg.localUrl)
 
     if (!name) {
-      const anthropicList = ANTHROPIC_MODELS
-        .map(m => (m === cfg.model ? `  * ${m} (current)` : `    ${m}`))
-        .join('\n')
-      const localList = LOCAL_MODELS
-        .map(m => (m === cfg.model ? `  * ${m} (current)` : `    ${m}`))
-        .join('\n')
+      const fmt = (list: string[]) =>
+        list.map(m => (m === cfg.model ? `  * ${m} (current)` : `    ${m}`)).join('\n')
 
       return {
         type: 'output',
@@ -43,11 +58,17 @@ export class ModelCommand implements SlashCommand {
           `Current model: ${cfg.model}`,
           `Backend: ${backend}`,
           '',
-          'Anthropic models (require ANTHROPIC_API_KEY):',
-          anthropicList,
+          `Local models — LM Studio at ${cfg.localUrl}:`,
+          fmt(LOCAL_MODELS),
           '',
-          `Local models (require LM Studio at ${cfg.localUrl}):`,
-          localList,
+          'Anthropic models (ANTHROPIC_API_KEY):',
+          fmt(ANTHROPIC_MODELS),
+          '',
+          'Gemini models (GEMINI_API_KEY):',
+          fmt(GEMINI_MODELS),
+          '',
+          'OpenAI models (OPENAI_API_KEY):',
+          fmt(OPENAI_MODELS),
           '',
           'Usage: /model <name>',
           'Tip:   /config localUrl http://localhost:1234/v1  — change LM Studio address',
@@ -56,7 +77,7 @@ export class ModelCommand implements SlashCommand {
     }
 
     setConfig({ model: name })
-    const newBackend = name.startsWith('claude-') ? 'Anthropic API' : `local (${cfg.localUrl})`
+    const newBackend = getBackendLabel(name, cfg.localUrl)
     return { type: 'output', text: `Model switched to: ${name}\nBackend: ${newBackend}` }
   }
 }

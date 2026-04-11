@@ -6,6 +6,7 @@ import type { Message, StreamEvent } from '../types/message.js'
 import type { Tool } from '../types/tool.js'
 import type { QueryOptions } from '../query.js'
 import type { ContentBlock } from '@anthropic-ai/sdk/resources/messages.js'
+// Logger is accessed via options.logger (typed through QueryOptions)
 
 // ── Message conversion ────────────────────────────────────────────────────────
 
@@ -90,7 +91,7 @@ export async function* queryLoopOpenAI(
   tools: Tool[],
   options: QueryOptions,
 ): AsyncGenerator<StreamEvent> {
-  const { model, maxTurns, systemPrompt, abortSignal, workingDir, localUrl } = options
+  const { model, maxTurns, systemPrompt, abortSignal, workingDir, localUrl, logger } = options
 
   const client = new OpenAI({
     baseURL: localUrl ?? 'http://localhost:1234/v1',
@@ -162,6 +163,7 @@ export async function* queryLoopOpenAI(
             inThinkBlock = true
             thinkBuffer = combined.slice(start)
             yield { type: 'thinking_start' }
+            logger?.onThinkingStart()
             text = ''
           }
         } else if (!inThinkBlock) {
@@ -180,6 +182,7 @@ export async function* queryLoopOpenAI(
           thinkBuffer += text
           thinkingContent += text
           yield { type: 'thinking_delta', text }
+          logger?.onThinkingDelta(text)
         }
 
         // Check if think block ends in our buffer
@@ -188,6 +191,7 @@ export async function* queryLoopOpenAI(
           if (endIdx >= 0) {
             inThinkBlock = false
             yield { type: 'thinking_end' }
+            logger?.onThinkingEnd()
             const after = thinkBuffer.slice(endIdx + 8)
             thinkBuffer = ''
             if (after) { responseText += after; yield { type: 'text_delta', text: after } }
@@ -223,6 +227,7 @@ export async function* queryLoopOpenAI(
     if (inThinkBlock) {
       // Unclosed think block — close it
       yield { type: 'thinking_end' }
+      logger?.onThinkingEnd()
     }
 
     // Fallback: if model put everything in <think> (enabled-thinking mode),
@@ -244,6 +249,9 @@ export async function* queryLoopOpenAI(
     }
     yield { type: 'message_stop' }
 
+    // Log assistant response text
+    if (responseText) logger?.assistantMessage(responseText)
+
     // Assemble assistant message in unified ContentBlock format
     const assistantContent: Array<{ type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: unknown }> = []
     if (responseText) {
@@ -264,7 +272,27 @@ export async function* queryLoopOpenAI(
       inputJson: tc.argumentsJson,
     }))
 
+    // Log tool calls (full input accumulated) then dispatch
+    for (const tc of pendingToolUse) {
+      logger?.toolCall(tc.id, tc.name, tc.inputJson)
+    }
+
     const toolResults = await dispatchTools(pendingToolUse, tools, { abortSignal, workingDir })
+
+    // Log results and yield tool_result events for UI debug overlay
+    for (const result of toolResults) {
+      const toolName = pendingToolUse.find(t => t.id === result.tool_use_id)?.name ?? ''
+      const inputJson = pendingToolUse.find(t => t.id === result.tool_use_id)?.inputJson ?? ''
+      logger?.toolResult(result.tool_use_id, toolName, result.content, result.is_error ?? false)
+      yield {
+        type: 'tool_result',
+        toolUseId: result.tool_use_id,
+        toolName,
+        toolInput: inputJson,
+        result: result.content,
+        isError: result.is_error ?? false,
+      }
+    }
 
     messages.push({
       role: 'user',

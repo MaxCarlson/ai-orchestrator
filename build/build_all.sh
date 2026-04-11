@@ -19,8 +19,8 @@ fi
 COMPOSE_EMPTY_ENV="$(mktemp)"
 trap 'rm -f "$COMPOSE_EMPTY_ENV"' EXIT
 
-echo "==> Building containers (docker compose build --pull)"
-docker compose --env-file "$COMPOSE_EMPTY_ENV" build --pull
+echo "==> Building containers (docker compose build --pull=missing)"
+docker compose --env-file "$COMPOSE_EMPTY_ENV" build --pull=missing
 
 echo "==> Starting services (docker compose up -d)"
 docker compose --env-file "$COMPOSE_EMPTY_ENV" up -d
@@ -30,8 +30,10 @@ docker compose --env-file "$COMPOSE_EMPTY_ENV" ps
 
 ORCH_PORT="${ORCHESTRATOR_PORT:-8000}"
 KOWEB_PORT="${KO_WEB_PORT:-3001}"
+CHAT_PORT="${KO_WEB_CHAT_PORT:-8765}"
 
 echo ""
 echo "==> Local endpoints"
 echo "Orchestrator API: http://localhost:${ORCH_PORT}"
-echo "Web UI (koweb): http://localhost:${KOWEB_PORT}"
+echo "Web UI (koweb):   http://localhost:${KOWEB_PORT}"
+echo "Chat WS server:   ws://localhost:${CHAT_PORT}"

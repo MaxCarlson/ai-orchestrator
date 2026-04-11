@@ -13,6 +13,11 @@ aioc "ask something"          # Start with initial message
 aioc -m claude-opus-4-6       # Use a specific model
 aioc --no-project             # Skip project auto-detection
 
+# Start web chat UI
+bun run chat:serve            # terminal 1: TypeScript WS server (port 8765)
+uv run python -m orchestrator_web_viewer.main  # terminal 2: FastAPI (port 8000)
+# Open http://localhost:8000/chat
+
 # Build + start everything with one command
 ./build/build_all.sh
 
@@ -218,9 +223,23 @@ The agent has access to these tools automatically:
 
 Conversations are saved to `~/.ai-orchestrator/sessions/` as JSON. Use `/session list` to see past sessions. Full session resume is planned for a future release.
 
+### All Supported Providers
+
+The `aioc` TUI and web chat UI at `/chat` support these providers via the same interface:
+
+| Provider | Models | Auth Required |
+|----------|--------|---------------|
+| Local (LM Studio) | `qwen3-coder-next`, `gpt-oss-20b`, `qwen3-30b`, ... | None |
+| Anthropic | `claude-sonnet-4-6`, `claude-opus-4-6`, ... | `ANTHROPIC_API_KEY` |
+| Google Gemini | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-flash` | `GEMINI_API_KEY` |
+| OpenAI | `gpt-4o`, `gpt-4o-mini`, `o3`, `o1` | `OPENAI_API_KEY` |
+
+Switch provider in TUI: `/model gemini-2.5-flash`
+Switch provider in web UI: use the dropdown selector
+
 ### Local GPU Models (LM Studio + RTX 5090)
 
-The `aioc` command auto-routes by model name: any model NOT starting with `claude-` is sent to LM Studio's OpenAI-compatible API.
+The `aioc` command auto-routes by model name: `gemini-*` → Google, `claude-*` → Anthropic, `gpt-*/o1-*/o3-*` → OpenAI, everything else → LM Studio.
 
 **Prerequisites:**
 1. Install [LM Studio](https://lmstudio.ai) (≥0.3)

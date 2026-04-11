@@ -348,6 +348,9 @@ function switchView(view, reason = 'user') {
     window.localStorage.setItem('currentView', view);
     logUiEvent('view_switch', { from: previousView, to: view, reason });
 
+    // Chat view needs full-height layout — toggle body class to override container styles
+    document.body.classList.toggle('chat-mode', view === 'chat');
+
     if (view !== 'tasks') {
         hideTrackingConfigPanel();
         hideTaskCreatePanel();
@@ -372,6 +375,9 @@ function switchView(view, reason = 'user') {
             break;
         case 'system':
             switchSystemView(currentSystemView, true);
+            break;
+        case 'chat':
+            if (window.chatViewActivated) window.chatViewActivated();
             break;
     }
 }

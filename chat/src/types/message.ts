@@ -32,10 +32,12 @@ export function toApiMessage(msg: Message): MessageParam {
 }
 
 export interface StreamEvent {
-  type: 'text_delta' | 'tool_use_start' | 'tool_use_delta' | 'tool_use_end' | 'message_stop' | 'error' | 'thinking_start' | 'thinking_delta' | 'thinking_end'
+  type: 'text_delta' | 'tool_use_start' | 'tool_use_delta' | 'tool_use_end' | 'tool_result' | 'message_stop' | 'error' | 'thinking_start' | 'thinking_delta' | 'thinking_end'
   text?: string
   toolName?: string
   toolUseId?: string
-  toolInput?: string
+  toolInput?: string   // partial JSON for tool_use_delta; full JSON for tool_result
+  result?: string      // tool result content (tool_result events)
+  isError?: boolean    // true if tool errored (tool_result events)
   error?: string
 }

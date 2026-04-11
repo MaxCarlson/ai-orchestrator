@@ -1,6 +1,7 @@
 import { parseArgs } from 'util'
 import { setConfig } from './commands/config.js'
 import { setProjectContext } from './project/context.js'
+import { Logger } from './logger.js'
 
 const VERSION = '0.1.0'
 
@@ -12,6 +13,7 @@ const { values, positionals } = parseArgs({
     dir:             { type: 'string',  short: 'd', default: process.cwd() },
     system:          { type: 'string',  short: 's' },
     'local-url':     { type: 'string',  short: 'u' },
+    log:             { type: 'string',  short: 'l' },
     serve:           { type: 'boolean', default: false },
     port:            { type: 'string',  default: '8765' },
     help:            { type: 'boolean', short: 'h', default: false },
@@ -38,6 +40,7 @@ Options:
   -d, --dir <path>        Working directory (default: cwd)
   -s, --system <prompt>   Override system prompt
   -u, --local-url <url>   LM Studio base URL (default: http://localhost:1234/v1)
+  -l, --log <path>        Write debug log to file (system prompt, thinking, tool calls/results)
       --serve             Start WebSocket API server (for web UI)
       --port <port>       Port for --serve mode (default: 8765)
   -h, --help              Show this help
@@ -77,7 +80,8 @@ if (values.serve) {
   const { REPL } = await import('./screens/REPL.js')
   const { QueryEngine } = await import('./QueryEngine.js')
 
-  const engine = new QueryEngine(workingDir)
+  const logger = new Logger(typeof values.log === 'string' ? values.log : null)
+  const engine = new QueryEngine(workingDir, logger)
   const initMessages: string[] = []
   for await (const event of engine.initialize()) {
     if (event.type === 'status') {

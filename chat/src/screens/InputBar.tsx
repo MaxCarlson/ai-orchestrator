@@ -30,9 +30,10 @@ interface InputBarProps {
   suggestionIndex: number   // index into suggestions[]
   disabled?: boolean
   hasThinking?: boolean     // show Ctrl+O hint when last message has thinking
+  hasTools?: boolean        // show Ctrl+T hint when last request used tools
 }
 
-export function InputBar({ value, suggestions, suggestionIndex, disabled = false, hasThinking = false }: InputBarProps) {
+export function InputBar({ value, suggestions, suggestionIndex, disabled = false, hasThinking = false, hasTools = false }: InputBarProps) {
   // Compute scrolling window so selected item is always visible
   const count = Math.min(suggestions.length, SUGGESTION_VISIBLE)
   const windowStart = Math.min(
@@ -41,6 +42,13 @@ export function InputBar({ value, suggestions, suggestionIndex, disabled = false
   )
   const visible = suggestions.slice(windowStart, windowStart + count)
   const nameColWidth = SLASH_COMMANDS.reduce((m, c) => Math.max(m, c.name.length), 0) + 2
+
+  // Build hint parts dynamically so it stays concise
+  const hintParts: string[] = ['/ commands', 'PgUp/↑↓ scroll']
+  if (hasThinking) hintParts.push('Ctrl+O thinking')
+  if (hasTools)    hintParts.push('Ctrl+T tools')
+  hintParts.push('Ctrl+C exit')
+  const hint = hintParts.join('  ·  ')
 
   return (
     <Box flexDirection="column">
@@ -81,11 +89,7 @@ export function InputBar({ value, suggestions, suggestionIndex, disabled = false
       {/* Hint line */}
       {!value && !disabled && (
         <Box paddingX={3}>
-          <Text color="gray" dimColor>
-            {hasThinking
-              ? '/ for commands  ·  PgUp/PgDn to scroll  ·  Ctrl+O thinking  ·  Ctrl+C to exit'
-              : '/ for commands  ·  PgUp/PgDn to scroll  ·  Ctrl+C to exit'}
-          </Text>
+          <Text color="gray" dimColor>{hint}</Text>
         </Box>
       )}
     </Box>

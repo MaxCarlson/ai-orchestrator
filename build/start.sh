@@ -16,14 +16,14 @@ fi
 BUILD_PULL="${BUILD_PULL:-0}"
 run_build() {
     if [ "$BUILD_PULL" = "1" ]; then
-        docker compose build --pull
+        docker compose build --pull=missing
     else
         docker compose build
     fi
 }
 
 if [ "$BUILD_PULL" = "1" ]; then
-    echo "==> Building containers (docker compose build --pull)"
+    echo "==> Building containers (docker compose build --pull=missing)"
 else
     echo "==> Building containers (docker compose build)"
 fi
@@ -41,7 +41,7 @@ if [ $BUILD_STATUS -ne 0 ]; then
         TMP_DOCKER_CONFIG="$(mktemp -d)"
         printf '{\"auths\":{}}' > "${TMP_DOCKER_CONFIG}/config.json"
         if [ "$BUILD_PULL" = "1" ]; then
-            DOCKER_CONFIG="$TMP_DOCKER_CONFIG" docker compose build --pull
+            DOCKER_CONFIG="$TMP_DOCKER_CONFIG" docker compose build --pull=missing
         else
             DOCKER_CONFIG="$TMP_DOCKER_CONFIG" docker compose build
         fi

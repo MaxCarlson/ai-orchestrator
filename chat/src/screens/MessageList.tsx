@@ -25,14 +25,21 @@ const ROLE_LABEL: Record<ChatMessage['role'], string> = {
 
 interface MessageListProps {
   messages: ChatMessage[]
-  topIndex: number        // first message to show; -1 = auto (tail)
-  viewportHeight: number  // used only for message selection, NOT for Box height
+  /** Which message is at the top. -1 = auto (tail of last message). */
+  topMsgIdx: number
+  /** Source lines to skip at the top of topMsgIdx's message. Ignored when auto. */
+  topLineOffset: number
+  viewportHeight: number
   termWidth: number
 }
 
-/** Conservative line estimate for message selection. */
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+const WRAP_W = (termWidth: number) => Math.max(termWidth - 4, 20)
+
+/** Estimated terminal lines for a message (used for message selection). */
 function estimateLines(msg: ChatMessage, width: number): number {
-  const w = Math.max(width - 4, 20)
+  const w = WRAP_W(width)
   const bodyLines = msg.content.split('\n').reduce(
     (sum, line) => sum + Math.max(1, Math.ceil((line.length || 1) / w)),
     0,
@@ -41,6 +48,7 @@ function estimateLines(msg: ChatMessage, width: number): number {
   return labelLine + bodyLines + 1  // +1 for marginBottom gap
 }
 
+/** First message index so the display fills viewportHeight from the bottom. */
 export function computeAutoTopIndex(
   messages: ChatMessage[],
   viewportHeight: number,
@@ -55,17 +63,65 @@ export function computeAutoTopIndex(
   return 0
 }
 
-export function MessageList({ messages, topIndex, viewportHeight, termWidth }: MessageListProps) {
-  const autoTop = topIndex < 0
+/**
+ * Returns the number of source lines hidden ABOVE the visible tail when
+ * fitting `maxTermLines` terminal lines of `content`.
+ * Used by REPL scroll handlers to know where the tail starts.
+ */
+export function computeTailStartLine(
+  content: string,
+  maxTermLines: number,
+  termWidth: number,
+): number {
+  const w = WRAP_W(termWidth)
+  const srcLines = content.split('\n')
+  let used = 0
+  let start = srcLines.length
+  while (start > 0) {
+    const line = srcLines[start - 1] ?? ''
+    const wrapCount = Math.max(1, Math.ceil((line.length || 1) / w))
+    if (used + wrapCount > maxTermLines) break
+    used += wrapCount
+    start--
+  }
+  return start
+}
+
+/**
+ * Returns the tail content (last N terminal lines worth of source lines) and
+ * the number of source lines hidden above it.
+ */
+function computeTail(
+  content: string,
+  maxTermLines: number,
+  termWidth: number,
+): { visible: string; hiddenSrcLines: number } {
+  const startSrc = computeTailStartLine(content, maxTermLines, termWidth)
+  return {
+    visible: content.split('\n').slice(startSrc).join('\n'),
+    hiddenSrcLines: startSrc,
+  }
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export function MessageList({
+  messages,
+  topMsgIdx,
+  topLineOffset,
+  viewportHeight,
+  termWidth,
+}: MessageListProps) {
+  const isAuto = topMsgIdx < 0
+  const autoTop = isAuto
     ? computeAutoTopIndex(messages, viewportHeight, termWidth)
-    : topIndex
+    : topMsgIdx
 
   const clampedTop = Math.max(0, Math.min(autoTop, messages.length - 1))
-  const hasAbove = clampedTop > 0
+  const hasAboveMsgs = clampedTop > 0
 
-  // Select which messages to show: walk forward from clampedTop until
-  // we exceed viewportHeight. Always include at least one message.
-  let remaining = viewportHeight - (hasAbove ? 1 : 0)
+  // Walk forward from clampedTop, accumulate until viewport is full.
+  let remaining = viewportHeight - (hasAboveMsgs ? 1 : 0)
   const displayMessages: ChatMessage[] = []
 
   for (let i = clampedTop; i < messages.length; i++) {
@@ -80,12 +136,9 @@ export function MessageList({ messages, topIndex, viewportHeight, termWidth }: M
   }
 
   return (
-    // flexGrow={1} tells Ink's flex engine to give this box all remaining
-    // vertical space after header, input, tools, etc. are laid out.
-    // overflow="hidden" clips any over-estimation, but content is never
-    // pushed off the bottom because we selected the right slice above.
-    <Box flexDirection="column" flexGrow={1} overflow="hidden">
-      {hasAbove && (
+    <Box flexDirection="column" flexGrow={1} overflow="hidden" minHeight={0}>
+      {/* Earlier-messages scroll indicator */}
+      {hasAboveMsgs && (
         <Box paddingX={2}>
           <Text color="gray" dimColor>
             {'↑  '}
@@ -97,17 +150,53 @@ export function MessageList({ messages, topIndex, viewportHeight, termWidth }: M
         </Box>
       )}
 
-      {displayMessages.map((msg, i) => {
-        const isSystem = msg.role === 'system'
+      {displayMessages.map((msg, idx) => {
+        const isSystem      = msg.role === 'system'
+        const isFirstMsg    = idx === 0
+        const isLastActual  = (clampedTop + idx) === messages.length - 1
+
+        let displayContent  = msg.content
+        let hiddenLineCount = 0
+
+        if (isFirstMsg && !isAuto && topLineOffset > 0 && !isSystem) {
+          // Manual scroll with line offset: skip first N source lines.
+          const srcLines = msg.content.split('\n')
+          hiddenLineCount = Math.min(topLineOffset, srcLines.length - 1)
+          displayContent  = srcLines.slice(hiddenLineCount).join('\n')
+        } else if (isAuto && isLastActual && !isSystem && displayMessages.length === 1) {
+          // Auto mode: show tail of the last message so the user always sees
+          // the most recently generated content, not the beginning.
+          //   reserve: hasAboveMsgs(1) + label(1) + marginBottom(1) + indicator(1)
+          const availLines = viewportHeight - (hasAboveMsgs ? 1 : 0) - 1 - 1 - 1
+          if (availLines > 2) {
+            const tail = computeTail(msg.content, availLines, termWidth)
+            if (tail.hiddenSrcLines > 0) {
+              displayContent  = tail.visible
+              hiddenLineCount = tail.hiddenSrcLines
+            }
+          }
+        }
+
         return (
-          <Box key={`${clampedTop}:${i}`} flexDirection="column" marginBottom={1} paddingX={1}>
-            {/* Label row (for non-system messages) */}
+          <Box key={`${clampedTop}:${idx}`} flexDirection="column" marginBottom={1} paddingX={1}>
+            {/* Role label */}
             {!isSystem && (
               <Text color={ROLE_COLOR[msg.role]} bold>
                 {ROLE_LABEL[msg.role]}
                 {msg.thinking
                   ? (msg.thinkingExpanded ? '  [thinking ↕Ctrl+O]' : '  [thinking — Ctrl+O]')
                   : ''}
+              </Text>
+            )}
+
+            {/* Lines-above indicator (tail trim or manual line offset) */}
+            {hiddenLineCount > 0 && (
+              <Text color="gray" dimColor>
+                {'  ↑ '}
+                {hiddenLineCount}
+                {' line'}
+                {hiddenLineCount !== 1 ? 's' : ''}
+                {' above — PgUp to scroll'}
               </Text>
             )}
 
@@ -127,7 +216,7 @@ export function MessageList({ messages, topIndex, viewportHeight, termWidth }: M
 
             {/* Message content */}
             <Text color={isSystem ? 'gray' : 'white'} dimColor={isSystem} wrap="wrap">
-              {isSystem ? `  ${msg.content}` : msg.content}
+              {isSystem ? `  ${displayContent}` : displayContent}
             </Text>
           </Box>
         )

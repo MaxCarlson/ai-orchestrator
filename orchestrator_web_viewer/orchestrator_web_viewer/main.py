@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import control, knowledge, lmstudio, logs, memory_proxy, orchestrator, project_tracking, results, system_stats, telemetry, termdash
+from .api.chat import router as chat_router
 from .websocket import manager
 from .log_utils import install_log_buffer
 
@@ -313,6 +314,9 @@ else:
     app.include_router(control.router, prefix="/api/control", tags=["control"])
     app.include_router(results.router, prefix="/api/results", tags=["results"])
     app.include_router(termdash.router, prefix="/api/termdash", tags=["termdash"])
+
+# Chat routes: /api/chat/models (GET) and /ws/chat (WebSocket proxy)
+app.include_router(chat_router)
 
 
 # Background tasks

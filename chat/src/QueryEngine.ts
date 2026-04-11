@@ -1,6 +1,8 @@
 import { spawnSync } from 'child_process'
 import { queryLoop } from './query.js'
 import { queryLoopOpenAI } from './backends/openai_compat.js'
+import { queryLoopGemini } from './backends/gemini_backend.js'
+import { Logger } from './logger.js'
 import { ensureLmStudio } from './backends/lmstudio.js'
 import { getConfig } from './commands/config.js'
 import { detectProject } from './project/detector.js'
@@ -75,11 +77,13 @@ export class QueryEngine {
   private readonly tools: Tool[]
   private readonly commandRegistry: CommandRegistry
   private readonly sessionStore: SessionStore
+  private readonly logger: Logger
   private currentSessionId: string | null = null
   readonly workingDir: string
 
-  constructor(workingDir = process.cwd()) {
+  constructor(workingDir = process.cwd(), logger?: Logger) {
     this.workingDir = workingDir
+    this.logger = logger ?? new Logger(null)
     this.tools = [
       new BashTool(),
       new FileReadTool(),
@@ -116,7 +120,8 @@ export class QueryEngine {
 
     // Auto-start LM Studio server and pre-load local model at startup
     const cfg = getConfig()
-    if (!cfg.model.startsWith('claude-')) {
+    const isLocalModel = !cfg.model.startsWith('claude-') && !cfg.model.startsWith('gemini-') && !/^(gpt-|o1-|o3-)/.test(cfg.model)
+    if (isLocalModel) {
       for await (const status of ensureLmStudio(cfg.model, cfg.localUrl)) {
         yield { type: 'status', text: status }
       }
@@ -163,14 +168,32 @@ export class QueryEngine {
     const envBlock = buildEnvBlock(this.workingDir, model)
     const fullSystemPrompt = systemPrompt + projectAddition + envBlock
 
-    const isLocal = !model.startsWith('claude-')
+    // Route by model name prefix:
+    //   gemini-*           → Google Generative AI
+    //   claude-*           → Anthropic
+    //   gpt-* / o1-* / o3-*  → OpenAI API (api.openai.com)
+    //   anything else      → LM Studio local (OpenAI-compat at localUrl)
+    const isGemini      = model.startsWith('gemini-')
+    const isClaude      = model.startsWith('claude-')
+    const isOpenAICloud = /^(gpt-|o1-|o3-)/.test(model)
 
     // Enable extended thinking for Anthropic models that support it (opus-4, sonnet-4+)
-    const thinkingEnabled = !isLocal && /claude-(opus|sonnet)-[4-9]/.test(model)
+    const thinkingEnabled = isClaude && /claude-(opus|sonnet)-[4-9]/.test(model)
 
-    const loop = isLocal
-      ? queryLoopOpenAI(this.messages, this.tools, { model, maxTurns, systemPrompt: fullSystemPrompt, abortSignal, workingDir: this.workingDir, localUrl })
-      : queryLoop(this.messages, this.tools, { model, maxTurns, systemPrompt: fullSystemPrompt, abortSignal, workingDir: this.workingDir, thinkingEnabled })
+    // Log user message and system prompt (once per user turn)
+    this.logger.userMessage(input)
+    this.logger.systemPrompt(model, this.workingDir, fullSystemPrompt)
+
+    const baseOptions = { model, maxTurns, systemPrompt: fullSystemPrompt, abortSignal, workingDir: this.workingDir, logger: this.logger }
+
+    const loop = isGemini
+      ? queryLoopGemini(this.messages, this.tools, baseOptions)
+      : isClaude
+        ? queryLoop(this.messages, this.tools, { ...baseOptions, thinkingEnabled })
+        : queryLoopOpenAI(this.messages, this.tools, {
+            ...baseOptions,
+            localUrl: isOpenAICloud ? 'https://api.openai.com/v1' : localUrl,
+          })
 
     for await (const event of loop) {
       yield event

@@ -4,6 +4,7 @@ import { toApiMessage } from './types/message.js'
 import type { Message, StreamEvent } from './types/message.js'
 import { recordTokenUsage } from './session/tokenTracker.js'
 import type { Tool, ToolResult } from './types/tool.js'
+import type { Logger } from './logger.js'
 
 export interface QueryOptions {
   model: string
@@ -13,6 +14,7 @@ export interface QueryOptions {
   workingDir: string
   localUrl?: string
   thinkingEnabled?: boolean
+  logger?: Logger
 }
 
 export interface PendingToolCall {
@@ -85,7 +87,7 @@ export async function* queryLoop(
   tools: Tool[],
   options: QueryOptions,
 ): AsyncGenerator<StreamEvent> {
-  const { model, maxTurns, systemPrompt, abortSignal, workingDir, thinkingEnabled } = options
+  const { model, maxTurns, systemPrompt, abortSignal, workingDir, thinkingEnabled, logger } = options
   let turns = 0
 
   while (turns < maxTurns) {
@@ -122,6 +124,7 @@ export async function* queryLoop(
           yield { type: 'tool_use_start', toolName: event.content_block.name, toolUseId: event.content_block.id }
         } else if (event.content_block.type === 'thinking') {
           yield { type: 'thinking_start' }
+          logger?.onThinkingStart()
         }
       } else if (event.type === 'content_block_delta') {
         if (event.delta.type === 'text_delta') {
@@ -133,10 +136,14 @@ export async function* queryLoop(
         }
         if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
           yield { type: 'thinking_delta', text: event.delta.thinking }
+          logger?.onThinkingDelta(event.delta.thinking)
         }
       } else if (event.type === 'content_block_stop') {
         if (currentBlockType === 'tool_use') yield { type: 'tool_use_end' }
-        if (currentBlockType === 'thinking') yield { type: 'thinking_end' }
+        if (currentBlockType === 'thinking') {
+          yield { type: 'thinking_end' }
+          logger?.onThinkingEnd()
+        }
         currentBlockType = ''
       } else if (event.type === 'message_stop') {
         yield { type: 'message_stop' }
@@ -150,12 +157,39 @@ export async function* queryLoop(
       finalMsg.usage.cache_read_input_tokens ?? 0,
     )
 
+    // Log assistant response text
+    const assistantText = finalMsg.content
+      .filter(b => b.type === 'text')
+      .map(b => (b.type === 'text' ? b.text : ''))
+      .join('')
+    if (assistantText) logger?.assistantMessage(assistantText)
+
     // Push assembled assistant message back to messages (fixes multi-turn memory)
     messages.push({ role: 'assistant', content: finalMsg.content })
 
     if (pendingToolUse.length === 0) break
 
+    // Log tool calls (full input now available) then dispatch
+    for (const call of pendingToolUse) {
+      logger?.toolCall(call.id, call.name, call.inputJson)
+    }
+
     const toolResults = await dispatchTools(pendingToolUse, tools, { abortSignal, workingDir })
+
+    // Log results, yield tool_result events for UI debug overlay
+    for (const result of toolResults) {
+      const toolName = pendingToolUse.find(t => t.id === result.tool_use_id)?.name ?? ''
+      const inputJson = pendingToolUse.find(t => t.id === result.tool_use_id)?.inputJson ?? ''
+      logger?.toolResult(result.tool_use_id, toolName, result.content, result.is_error ?? false)
+      yield {
+        type: 'tool_result',
+        toolUseId: result.tool_use_id,
+        toolName,
+        toolInput: inputJson,
+        result: result.content,
+        isError: result.is_error ?? false,
+      }
+    }
 
     // Push tool results back to messages
     messages.push({

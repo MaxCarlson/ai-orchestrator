@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Orchestrator & Knowledge Manager</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/chat.css">
 </head>
 <body>
     <!-- Header -->
@@ -17,6 +18,7 @@
             <button class="nav-btn" data-view="memory">Memory</button>
             <button class="nav-btn" data-view="embeddings">Embeddings</button>
             <button class="nav-btn" data-view="system">System</button>
+            <button class="nav-btn" data-view="chat">Chat</button>
         </nav>
         <div class="status-indicator">
             <span class="status-dot"></span>
@@ -872,6 +874,59 @@
                 </div>
             </div>
         </div>
+
+        <!-- Chat View -->
+        <div id="chat-view" class="view">
+
+            <!-- Toolbar: model selector + status -->
+            <div class="chat-toolbar">
+                <select id="model-select">
+                    <option value="">Loading models…</option>
+                </select>
+                <button id="chat-btn-refresh-models" title="Refresh model list (re-queries LM Studio)">&#8635;</button>
+                <button id="chat-btn-clear">/clear</button>
+                <button id="chat-btn-cost">/cost</button>
+                <span id="chat-conn-status" class="chat-conn-status disconnected">disconnected</span>
+            </div>
+
+            <!-- Panel 1: Messages + input (fills one viewport height) -->
+            <div class="chat-screen">
+                <div id="chat-message-list" aria-live="polite">
+                    <div class="chat-msg system"><p>Chat agent ready. Select a model above or type /help for commands.</p></div>
+                </div>
+                <div id="chat-tool-progress"></div>
+                <form id="chat-form" autocomplete="off">
+                    <textarea id="chat-input" rows="2"
+                        placeholder="Message (Enter to send · Shift+Enter for newline)"></textarea>
+                    <button type="submit" id="chat-btn-send">Send</button>
+                </form>
+                <div class="chat-scroll-hint">&#8964; Debug Log</div>
+            </div>
+
+            <!-- Panel 2: Log viewer (scroll down to see) -->
+            <div class="log-screen">
+                <div class="log-header">
+                    <span class="log-title">Debug Log</span>
+                    <div class="log-toggles">
+                        <label class="log-toggle thinking">
+                            <input type="checkbox" id="tog-thinking" checked> Thinking
+                        </label>
+                        <label class="log-toggle tool-use">
+                            <input type="checkbox" id="tog-tool-use" checked> Tool Use
+                        </label>
+                        <label class="log-toggle tool-result">
+                            <input type="checkbox" id="tog-tool-result" checked> Tool Output
+                        </label>
+                        <label class="log-toggle model-output">
+                            <input type="checkbox" id="tog-model-output" checked> Model Output
+                        </label>
+                    </div>
+                    <button id="chat-btn-log-clear">Clear Log</button>
+                </div>
+                <div id="chat-log-list"></div>
+            </div>
+
+        </div><!-- end #chat-view -->
     </main>
 
     <div id="system-meter" class="system-meter">
@@ -894,5 +949,6 @@
     <script defer src="/static/memory.js"></script>
     <script defer src="/static/system.js"></script>
     <script defer src="/static/app.js"></script>
+    <script defer src="/static/chat.js"></script>
 </body>
 </html>
