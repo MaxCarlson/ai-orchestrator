@@ -43,8 +43,9 @@ const PORT        = parseInt(values.port ?? '8765', 10)
 const WORKING_DIR = values.dir ?? process.cwd()
 
 interface ClientMessage {
-  type: 'message' | 'abort'
+  type: 'message' | 'abort' | 'set_workdir'
   text?: string
+  dir?: string
 }
 
 type ExtendedWS = {
@@ -83,6 +84,17 @@ Bun.serve({
       if (parsed.type === 'abort') {
         ext.abort?.abort()
         ext.abort = null
+        return
+      }
+
+      if (parsed.type === 'set_workdir' && parsed.dir) {
+        const { existsSync } = await import('fs')
+        if (existsSync(parsed.dir)) {
+          ext.engine.workingDir = parsed.dir
+          ws.send(JSON.stringify({ type: 'workdir_changed', dir: parsed.dir }))
+        } else {
+          ws.send(JSON.stringify({ type: 'error', error: `Directory not found: ${parsed.dir}` }))
+        }
         return
       }
 

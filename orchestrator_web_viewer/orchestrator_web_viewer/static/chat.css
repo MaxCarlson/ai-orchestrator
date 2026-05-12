@@ -7,6 +7,9 @@ body.chat-mode .main-content {
     padding-bottom: 0;
 }
 
+/* Hide system meter overlay in chat mode — it covers the chat area */
+body.chat-mode #system-meter { display: none; }
+
 /* The chat view itself is a flex column filling remaining viewport height */
 #chat-view.active {
     display: flex;
@@ -59,6 +62,17 @@ body.chat-mode .main-content {
 .chat-toolbar button:hover {
     border-color: var(--accent, #4f8cff);
     color: var(--accent, #4f8cff);
+}
+
+.chat-workdir {
+    font-size: 0.72rem;
+    color: var(--text-muted, #94a3b8);
+    font-family: 'JetBrains Mono', monospace;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
 }
 
 .chat-conn-status {

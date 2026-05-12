@@ -14,10 +14,35 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
 
 CHAT_SERVER_URL = os.getenv("KO_WEB_CHAT_SERVER_URL", "ws://localhost:8765")
-LM_STUDIO_URL   = "http://{}:{}".format(
-    os.getenv("KO_WEB_LMSTUDIO_HOST", "localhost"),
-    os.getenv("KO_WEB_LMSTUDIO_PORT", "1234"),
-)
+
+
+def _lmstudio_url() -> str:
+    """Return the LM Studio base URL, auto-detecting WSL2 Windows host when needed."""
+    host = os.getenv("KO_WEB_LMSTUDIO_HOST", "")
+    port = os.getenv("KO_WEB_LMSTUDIO_PORT", "1234")
+    if not host:
+        host = _detect_wsl2_host() or "localhost"
+    return f"http://{host}:{port}"
+
+
+def _detect_wsl2_host() -> str:
+    """Read the default-route gateway from /proc/net/route (WSL2 Windows host IP)."""
+    try:
+        with open("/proc/net/route", encoding="ascii") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == "00000000":  # default route
+                    hex_ip = parts[2]
+                    # Little-endian hex → dotted quad
+                    return ".".join(
+                        str(int(hex_ip[i : i + 2], 16)) for i in (6, 4, 2, 0)
+                    )
+    except Exception:
+        pass
+    return ""
+
+
+LM_STUDIO_URL = _lmstudio_url()
 
 # ── Static model registry ─────────────────────────────────────────────────────
 # These are always shown regardless of what is running locally.

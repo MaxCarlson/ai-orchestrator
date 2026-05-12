@@ -518,73 +518,165 @@
         <div id="embeddings-view" class="view">
             <h2>Embeddings</h2>
 
-            <div class="section">
-                <h3>AST Parse Progress</h3>
-                <div class="inline-panel ast-progress-panel">
-                    <div class="form-row">
-                        <div>
-                            <strong id="ast-progress-status">Idle</strong>
-                            <p id="ast-progress-meta" class="microcopy">No active embedding run.</p>
-                        </div>
-                        <div class="microcopy" id="ast-progress-file"></div>
-                    </div>
-                    <canvas id="ast-progress-canvas" width="640" height="180"></canvas>
-                </div>
+            <!-- Project selector bar -->
+            <div class="embed-project-bar section">
+                <label for="embed-project-select" class="embed-project-label">Project</label>
+                <select id="embed-project-select">
+                    <option value="__global__">Global Embeddings</option>
+                </select>
+                <button id="embed-refresh-btn" title="Reload">&#8635;</button>
+                <span id="embed-project-status" class="microcopy"></span>
             </div>
 
-            <div class="section">
-                <h3>Global Embedding Trigger</h3>
-                <form id="global-embed-form" class="inline-panel">
-                    <label>
-                        Repository Paths (one per line)
-                        <textarea id="global-embed-paths" rows="4" placeholder="/path/to/repo"></textarea>
-                    </label>
-                    <label>
-                        Mode
-                        <select id="global-embed-mode">
-                            <option value="auto" selected>Auto</option>
-                            <option value="code">Code</option>
-                            <option value="text">Text</option>
-                        </select>
-                    </label>
-                    <p id="global-embed-mode-desc" class="microcopy"></p>
-                    <div class="form-row">
-                        <input type="text" id="global-embed-code-model" placeholder="Code model (default: codebert-base)">
-                        <input type="text" id="global-embed-text-model" placeholder="Text model (default: bge-base-en-v1.5)">
-                    </div>
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="global-embed-force">
-                        Force reindex
-                    </label>
-                    <button type="submit">Run Global Embedding</button>
-                    <p id="global-embed-status" class="microcopy"></p>
-                </form>
-            </div>
-
-            <div class="section">
-                <h3>Global Embedding Search</h3>
-                <div class="memory-toolbar">
-                    <input type="search" id="global-search-query" placeholder="Search global embeddings...">
-                    <button id="global-search-btn">Search</button>
-                </div>
-                <div id="global-search-results" class="memory-list"></div>
-            </div>
-
-            <div class="section">
-                <h3>Global Embedding Stats</h3>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <h3>Total Global Embeddings</h3>
-                        <div class="stat-value" id="global-embedding-total">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>Overall Frequency Ratio</h3>
-                        <div class="stat-value" id="global-embedding-ratio">0</div>
-                    </div>
-                </div>
+            <!-- Per-project panel (hidden when global is selected) -->
+            <div id="embed-project-panel" class="hidden">
                 <div class="section">
-                    <h4>Top Used (Last Access)</h4>
-                    <div id="global-embedding-top" class="data-table"></div>
+                    <h3>Chunk Overview</h3>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <h3>Total Chunks</h3>
+                            <div class="stat-value" id="embed-chunk-total">0</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Code Chunks</h3>
+                            <div class="stat-value" id="embed-chunk-code">0</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Text Chunks</h3>
+                            <div class="stat-value" id="embed-chunk-text">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Search Chunks</h3>
+                    <div class="memory-toolbar">
+                        <input type="search" id="embed-search-query" placeholder="Semantic search over project chunks…" style="flex:1">
+                        <label>
+                            Type
+                            <select id="embed-search-type">
+                                <option value="text_chunks">Text</option>
+                                <option value="code_chunks">Code</option>
+                            </select>
+                        </label>
+                        <button id="embed-search-btn">Search</button>
+                    </div>
+                    <div id="embed-search-results" class="memory-list"></div>
+                </div>
+
+                <div class="section">
+                    <h3>Browse Chunks</h3>
+                    <div class="memory-toolbar">
+                        <label>
+                            Type filter
+                            <select id="embed-browse-type">
+                                <option value="text">Text</option>
+                                <option value="code">Code</option>
+                            </select>
+                        </label>
+                        <button id="embed-browse-btn">Load</button>
+                        <span id="embed-browse-count" class="microcopy"></span>
+                    </div>
+                    <div id="embed-browse-results" class="data-table"></div>
+                    <div class="embed-pagination">
+                        <button id="embed-browse-prev" class="secondary-btn" disabled>&#8592; Prev</button>
+                        <span id="embed-browse-page" class="microcopy">Page 1</span>
+                        <button id="embed-browse-next" class="secondary-btn">Next &#8594;</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Re-index Project</h3>
+                    <form id="project-embed-form" class="inline-panel">
+                        <label>
+                            Mode
+                            <select id="project-embed-mode">
+                                <option value="auto" selected>Auto</option>
+                                <option value="code">Code</option>
+                                <option value="text">Text</option>
+                            </select>
+                        </label>
+                        <p id="project-embed-mode-desc" class="microcopy"></p>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="project-embed-force">
+                            Force reindex
+                        </label>
+                        <button type="submit">Run</button>
+                        <p id="project-embed-status" class="microcopy"></p>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Global panel (shown when __global__ is selected) -->
+            <div id="embed-global-panel">
+                <div class="section">
+                    <h3>AST Parse Progress</h3>
+                    <div class="inline-panel ast-progress-panel">
+                        <div class="form-row">
+                            <div>
+                                <strong id="ast-progress-status">Idle</strong>
+                                <p id="ast-progress-meta" class="microcopy">No active embedding run.</p>
+                            </div>
+                            <div class="microcopy" id="ast-progress-file"></div>
+                        </div>
+                        <canvas id="ast-progress-canvas" width="640" height="180"></canvas>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Global Embedding Trigger</h3>
+                    <form id="global-embed-form" class="inline-panel">
+                        <label>
+                            Repository Paths (one per line)
+                            <textarea id="global-embed-paths" rows="4" placeholder="/path/to/repo"></textarea>
+                        </label>
+                        <label>
+                            Mode
+                            <select id="global-embed-mode">
+                                <option value="auto" selected>Auto</option>
+                                <option value="code">Code</option>
+                                <option value="text">Text</option>
+                            </select>
+                        </label>
+                        <p id="global-embed-mode-desc" class="microcopy"></p>
+                        <div class="form-row">
+                            <input type="text" id="global-embed-code-model" placeholder="Code model (default: codebert-base)">
+                            <input type="text" id="global-embed-text-model" placeholder="Text model (default: bge-large-en-v1.5)">
+                        </div>
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="global-embed-force">
+                            Force reindex
+                        </label>
+                        <button type="submit">Run Global Embedding</button>
+                        <p id="global-embed-status" class="microcopy"></p>
+                    </form>
+                </div>
+
+                <div class="section">
+                    <h3>Global Embedding Search</h3>
+                    <div class="memory-toolbar">
+                        <input type="search" id="global-search-query" placeholder="Search global embeddings...">
+                        <button id="global-search-btn">Search</button>
+                    </div>
+                    <div id="global-search-results" class="memory-list"></div>
+                </div>
+
+                <div class="section">
+                    <h3>Global Embedding Stats</h3>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <h3>Total Global Embeddings</h3>
+                            <div class="stat-value" id="global-embedding-total">0</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Overall Frequency Ratio</h3>
+                            <div class="stat-value" id="global-embedding-ratio">0</div>
+                        </div>
+                    </div>
+                    <div class="section">
+                        <h4>Top Used (Last Access)</h4>
+                        <div id="global-embedding-top" class="data-table"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -753,23 +845,39 @@
                 <div class="section">
                     <h3>Load Model</h3>
                     <form id="lmstudio-load-form" class="inline-panel">
-                        <input type="text" id="lmstudio-load-path" placeholder="Model path or key" required>
+                        <label>
+                            Model
+                            <select id="lmstudio-load-select">
+                                <option value="">— select a model —</option>
+                            </select>
+                        </label>
                         <div class="form-row">
-                            <input type="text" id="lmstudio-load-identifier" placeholder="Identifier (optional)">
-                            <input type="text" id="lmstudio-load-gpu" placeholder="GPU offload (max/off/0-1)">
+                            <label>
+                                Identifier (optional)
+                                <input type="text" id="lmstudio-load-identifier" placeholder="e.g. my-model">
+                            </label>
+                            <label>
+                                GPU offload
+                                <select id="lmstudio-load-gpu">
+                                    <option value="">Auto</option>
+                                    <option value="max">Max (full GPU)</option>
+                                    <option value="off">Off (CPU only)</option>
+                                    <option value="0.25">25%</option>
+                                    <option value="0.5">50%</option>
+                                    <option value="0.75">75%</option>
+                                </select>
+                            </label>
                         </div>
                         <div class="form-row">
-                            <input type="number" id="lmstudio-load-ctx" placeholder="Context length">
-                            <input type="number" id="lmstudio-load-ttl" placeholder="TTL seconds">
+                            <label>
+                                Context length
+                                <input type="number" id="lmstudio-load-ctx" placeholder="Default">
+                            </label>
+                            <label>
+                                TTL (seconds)
+                                <input type="number" id="lmstudio-load-ttl" placeholder="No TTL">
+                            </label>
                         </div>
-                        <label class="checkbox-inline">
-                            <input type="checkbox" id="lmstudio-load-exact">
-                            Exact match
-                        </label>
-                        <label class="checkbox-inline">
-                            <input type="checkbox" id="lmstudio-load-estimate">
-                            Estimate only
-                        </label>
                         <button type="submit">Load</button>
                         <p id="lmstudio-load-status" class="microcopy"></p>
                     </form>
@@ -778,7 +886,12 @@
                 <div class="section">
                     <h3>Unload Model</h3>
                     <form id="lmstudio-unload-form" class="inline-panel">
-                        <input type="text" id="lmstudio-unload-identifier" placeholder="Identifier (leave blank for only model)">
+                        <label>
+                            Loaded Model
+                            <select id="lmstudio-unload-select">
+                                <option value="">— select a loaded model —</option>
+                            </select>
+                        </label>
                         <label class="checkbox-inline">
                             <input type="checkbox" id="lmstudio-unload-all">
                             Unload all
@@ -789,31 +902,41 @@
                 </div>
 
                 <div class="section">
-                    <h3>Download Model</h3>
-                    <form id="lmstudio-get-form" class="inline-panel">
-                        <input type="text" id="lmstudio-get-name" placeholder="Model name (e.g. llama-3.1-8b@q4_k_m)" required>
+                    <h3>Search &amp; Download Models</h3>
+                    <div class="lms-search-panel">
                         <div class="form-row">
-                            <input type="number" id="lmstudio-get-limit" placeholder="Limit">
-                            <label class="checkbox-inline">
-                                <input type="checkbox" id="lmstudio-get-gguf">
-                                GGUF
+                            <input type="search" id="lmstudio-hf-query" placeholder="Search HuggingFace GGUF models…" style="flex:1">
+                            <button id="lmstudio-hf-search-btn" type="button">Search</button>
+                        </div>
+                        <div class="form-row lms-filters">
+                            <label>
+                                Sort by
+                                <select id="lmstudio-hf-sort">
+                                    <option value="downloads">Most Downloaded</option>
+                                    <option value="likes">Most Liked</option>
+                                    <option value="lastModified">Recently Updated</option>
+                                    <option value="createdAt">Newest</option>
+                                </select>
                             </label>
-                            <label class="checkbox-inline">
-                                <input type="checkbox" id="lmstudio-get-mlx">
-                                MLX
+                            <label>
+                                Max size (GB)
+                                <input type="number" id="lmstudio-hf-maxgb" min="0" step="0.5" placeholder="No limit" style="width:90px">
+                            </label>
+                            <label>
+                                Model type
+                                <select id="lmstudio-hf-type">
+                                    <option value="">Any</option>
+                                    <option value="thinking">Thinking / Reasoning</option>
+                                    <option value="tool">Tool Use / Agentic</option>
+                                    <option value="vision">Vision (multimodal)</option>
+                                    <option value="code">Code</option>
+                                    <option value="instruct">Instruction-tuned</option>
+                                </select>
                             </label>
                         </div>
-                        <label class="checkbox-inline">
-                            <input type="checkbox" id="lmstudio-get-show-all">
-                            Always show all results
-                        </label>
-                        <label class="checkbox-inline">
-                            <input type="checkbox" id="lmstudio-get-show-download">
-                            Always show download options
-                        </label>
-                        <button type="submit">Download</button>
-                        <p id="lmstudio-get-status" class="microcopy"></p>
-                    </form>
+                        <div id="lmstudio-hf-results" class="lms-search-results"></div>
+                        <p id="lmstudio-hf-status" class="microcopy"></p>
+                    </div>
                 </div>
 
                 <div class="section">
@@ -880,12 +1003,14 @@
 
             <!-- Toolbar: model selector + status -->
             <div class="chat-toolbar">
-                <select id="model-select">
+                <select id="chat-model-select">
                     <option value="">Loading models…</option>
                 </select>
                 <button id="chat-btn-refresh-models" title="Refresh model list (re-queries LM Studio)">&#8635;</button>
                 <button id="chat-btn-clear">/clear</button>
                 <button id="chat-btn-cost">/cost</button>
+                <button id="chat-btn-folder" title="Set working directory">&#128193; Folder</button>
+                <span id="chat-workdir" class="chat-workdir" title="Current working directory"></span>
                 <span id="chat-conn-status" class="chat-conn-status disconnected">disconnected</span>
             </div>
 

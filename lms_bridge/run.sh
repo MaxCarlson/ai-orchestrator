@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# PYTHONPATH in this environment includes pyenv site-packages which can poison
+# the bridge's isolated venv. Unset it so the venv packages are used cleanly.
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP 2>/dev/null || true
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT/lms_bridge"
 
@@ -42,6 +46,21 @@ VENV_PY=".venv/bin/python"
 
 export LMS_HOST="${LMS_HOST:-127.0.0.1}"
 export LMS_PORT="${LMS_PORT:-1234}"
+
+# Auto-detect lms.exe from common WSL2 Windows-side installation paths
+# if LMS_BINARY is not explicitly set or isn't on PATH.
+if [ "${LMS_BINARY:-lms.exe}" = "lms.exe" ] && ! command -v lms.exe >/dev/null 2>&1; then
+    for _candidate in \
+        "/mnt/c/Users/$USER/.lmstudio/bin/lms.exe" \
+        /mnt/c/Users/*/.lmstudio/bin/lms.exe \
+        "/mnt/c/Program Files/LM-Studio/bin/lms.exe"
+    do
+        if [ -x "$_candidate" ]; then
+            LMS_BINARY="$_candidate"
+            break
+        fi
+    done
+fi
 export LMS_BINARY="${LMS_BINARY:-lms.exe}"
 
 exec "$VENV_PY" -m uvicorn app:app --host 0.0.0.0 --port 5080

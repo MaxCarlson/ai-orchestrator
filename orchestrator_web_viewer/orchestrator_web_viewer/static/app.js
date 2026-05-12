@@ -306,6 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupLmstudioControls();
     initializeEmbeddingControls();
     initializeEmbeddingsView();
+    setupEmbeddingsControls();
     startSystemMeter();
     checkServiceAvailability();
 
@@ -789,7 +790,8 @@ function setupLmstudioControls() {
     const modelsBtn = document.getElementById('lmstudio-models-refresh');
     const loadForm = document.getElementById('lmstudio-load-form');
     const unloadForm = document.getElementById('lmstudio-unload-form');
-    const getForm = document.getElementById('lmstudio-get-form');
+    const hfSearchBtn = document.getElementById('lmstudio-hf-search-btn');
+    const hfQuery = document.getElementById('lmstudio-hf-query');
     const serverStart = document.getElementById('lmstudio-server-start');
     const serverStop = document.getElementById('lmstudio-server-stop');
 
@@ -805,8 +807,11 @@ function setupLmstudioControls() {
     if (unloadForm) {
         unloadForm.addEventListener('submit', handleLmstudioUnload);
     }
-    if (getForm) {
-        getForm.addEventListener('submit', handleLmstudioGet);
+    if (hfSearchBtn) {
+        hfSearchBtn.addEventListener('click', handleLmstudioHfSearch);
+    }
+    if (hfQuery) {
+        hfQuery.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleLmstudioHfSearch(); });
     }
     if (serverStart) {
         serverStart.addEventListener('click', () => handleLmstudioServer('start'));

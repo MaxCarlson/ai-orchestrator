@@ -331,9 +331,29 @@ async function loadLmstudioModels() {
             countEl.textContent = models.length;
         }
         renderLmstudioModels(listEl, models);
+        // Populate load-model dropdown using safe DOM methods
+        const loadSel = document.getElementById('lmstudio-load-select');
+        if (loadSel) {
+            const prev = loadSel.value;
+            while (loadSel.firstChild) loadSel.removeChild(loadSel.firstChild);
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '— select a model —';
+            loadSel.appendChild(placeholder);
+            models.filter(m => m.type === 'llm' || !m.type).forEach((m) => {
+                const key = m.modelKey || m.key || m.path || '';
+                const quant = m.quantization && m.quantization.name ? ` ${m.quantization.name}` : '';
+                const params = m.paramsString ? ` (${m.paramsString}${quant})` : '';
+                const opt = document.createElement('option');
+                opt.value = key;
+                opt.textContent = `${m.displayName || key}${params}`;
+                if (key === prev) opt.selected = true;
+                loadSel.appendChild(opt);
+            });
+        }
     } catch (error) {
         if (listEl) {
-            listEl.innerHTML = '<div class="error">Failed to load models</div>';
+            listEl.textContent = 'Failed to load models';
         }
     }
 }
@@ -352,9 +372,27 @@ async function loadLmstudioLoaded() {
             countEl.textContent = models.length;
         }
         renderLmstudioLoaded(listEl, models);
+        // Populate unload-model dropdown using safe DOM methods
+        const unloadSel = document.getElementById('lmstudio-unload-select');
+        if (unloadSel) {
+            const prev = unloadSel.value;
+            while (unloadSel.firstChild) unloadSel.removeChild(unloadSel.firstChild);
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = models.length ? '— select a loaded model —' : '(no models loaded)';
+            unloadSel.appendChild(placeholder);
+            models.forEach((m) => {
+                const id = m.identifier || m.id || m.modelKey || '';
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = id;
+                if (id === prev) opt.selected = true;
+                unloadSel.appendChild(opt);
+            });
+        }
     } catch (error) {
         if (listEl) {
-            listEl.innerHTML = '<div class="error">Failed to load loaded models</div>';
+            listEl.textContent = 'Failed to load loaded models';
         }
     }
 }
@@ -426,20 +464,21 @@ function renderLmstudioLoaded(container, models) {
 async function handleLmstudioLoad(event) {
     event.preventDefault();
     const statusEl = document.getElementById('lmstudio-load-status');
-    const payload = {
-        path: document.getElementById('lmstudio-load-path')?.value.trim(),
-        identifier: document.getElementById('lmstudio-load-identifier')?.value.trim() || undefined,
-        gpu: document.getElementById('lmstudio-load-gpu')?.value.trim() || undefined,
-        context_length: Number(document.getElementById('lmstudio-load-ctx')?.value || 0) || undefined,
-        ttl: Number(document.getElementById('lmstudio-load-ttl')?.value || 0) || undefined,
-        exact: Boolean(document.getElementById('lmstudio-load-exact')?.checked),
-        estimate_only: Boolean(document.getElementById('lmstudio-load-estimate')?.checked),
-    };
-    if (!payload.path) {
-        if (statusEl) statusEl.textContent = 'Model path is required.';
+    const modelKey = document.getElementById('lmstudio-load-select')?.value.trim();
+    if (!modelKey) {
+        if (statusEl) statusEl.textContent = 'Select a model first.';
         return;
     }
-    if (statusEl) statusEl.textContent = 'Loading...';
+    const gpuVal = document.getElementById('lmstudio-load-gpu')?.value || '';
+    const payload = {
+        path: modelKey,
+        identifier: document.getElementById('lmstudio-load-identifier')?.value.trim() || undefined,
+        gpu: gpuVal || undefined,
+        context_length: Number(document.getElementById('lmstudio-load-ctx')?.value || 0) || undefined,
+        ttl: Number(document.getElementById('lmstudio-load-ttl')?.value || 0) || undefined,
+        yes: true,
+    };
+    if (statusEl) statusEl.textContent = 'Loading… (this may take a minute)';
     try {
         const response = await fetch('/api/lmstudio/load', {
             method: 'POST',
@@ -460,15 +499,18 @@ async function handleLmstudioLoad(event) {
 async function handleLmstudioUnload(event) {
     event.preventDefault();
     const statusEl = document.getElementById('lmstudio-unload-status');
-    const payload = {
-        identifier: document.getElementById('lmstudio-unload-identifier')?.value.trim() || undefined,
-        all: Boolean(document.getElementById('lmstudio-unload-all')?.checked),
-    };
-    if (!payload.identifier && !payload.all) {
-        if (statusEl) statusEl.textContent = 'Provide an identifier or select unload all.';
+    const unloadAll = Boolean(document.getElementById('lmstudio-unload-all')?.checked);
+    const identifier = document.getElementById('lmstudio-unload-select')?.value.trim();
+    if (!identifier && !unloadAll) {
+        if (statusEl) statusEl.textContent = 'Select a model or choose Unload all.';
         return;
     }
-    if (statusEl) statusEl.textContent = 'Unloading...';
+    if (!window.confirm(unloadAll ? 'Unload ALL models?' : `Unload "${identifier}"?`)) return;
+    const payload = {
+        identifier: unloadAll ? undefined : identifier,
+        all: unloadAll,
+    };
+    if (statusEl) statusEl.textContent = 'Unloading…';
     try {
         const response = await fetch('/api/lmstudio/unload', {
             method: 'POST',
@@ -486,36 +528,151 @@ async function handleLmstudioUnload(event) {
     }
 }
 
-async function handleLmstudioGet(event) {
-    event.preventDefault();
-    const statusEl = document.getElementById('lmstudio-get-status');
-    const payload = {
-        model_name: document.getElementById('lmstudio-get-name')?.value.trim(),
-        gguf: Boolean(document.getElementById('lmstudio-get-gguf')?.checked),
-        mlx: Boolean(document.getElementById('lmstudio-get-mlx')?.checked),
-        always_show_all: Boolean(document.getElementById('lmstudio-get-show-all')?.checked),
-        always_show_download: Boolean(document.getElementById('lmstudio-get-show-download')?.checked),
-        limit: Number(document.getElementById('lmstudio-get-limit')?.value || 0) || undefined,
-    };
-    if (!payload.model_name) {
-        if (statusEl) statusEl.textContent = 'Model name is required.';
+// ── HuggingFace model search ──────────────────────────────────────────────────
+
+// Type-tag keyword map for client-side model filtering
+const HF_TYPE_TAGS = {
+    thinking:  ['thinking', 'reasoning', 'r1', 'o1', 'qwq', 'skywork-o'],
+    tool:      ['tool-use', 'tool_use', 'function-calling', 'agentic', 'agent'],
+    vision:    ['vision', 'multimodal', 'image-text-to-text', 'visual'],
+    code:      ['code', 'coding', 'starcoder', 'codellama', 'deepseek-coder'],
+    instruct:  ['instruct', 'chat', 'it', 'instruction'],
+};
+
+function _hfModelMatchesType(model, typeFilter) {
+    if (!typeFilter) return true;
+    const keywords = HF_TYPE_TAGS[typeFilter] || [];
+    const haystack = [
+        model.id || '',
+        ...(model.tags || []),
+        ...(model.pipeline_tag ? [model.pipeline_tag] : []),
+    ].join(' ').toLowerCase();
+    return keywords.some(kw => haystack.includes(kw));
+}
+
+function _hfModelSizeGb(model) {
+    // Sum the sizes of GGUF files listed in siblings
+    const siblings = model.siblings || [];
+    let total = 0;
+    siblings.forEach(f => {
+        if (f.rfilename && f.rfilename.endsWith('.gguf') && f.size) {
+            total += f.size;
+        }
+    });
+    return total > 0 ? total / 1073741824 : null;  // bytes → GB
+}
+
+async function handleLmstudioHfSearch() {
+    const query = document.getElementById('lmstudio-hf-query')?.value.trim();
+    const sort = document.getElementById('lmstudio-hf-sort')?.value || 'downloads';
+    const maxGb = parseFloat(document.getElementById('lmstudio-hf-maxgb')?.value || '0') || 0;
+    const typeFilter = document.getElementById('lmstudio-hf-type')?.value || '';
+    const statusEl = document.getElementById('lmstudio-hf-status');
+    const resultsEl = document.getElementById('lmstudio-hf-results');
+
+    if (!query) {
+        if (statusEl) statusEl.textContent = 'Enter a search term.';
         return;
     }
-    if (statusEl) statusEl.textContent = 'Downloading...';
+    if (statusEl) statusEl.textContent = 'Searching HuggingFace…';
+    while (resultsEl && resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+
+    try {
+        const params = new URLSearchParams({
+            search: query,
+            filter: 'gguf',
+            sort,
+            direction: '-1',
+            limit: '30',
+            full: 'true',
+        });
+        const resp = await fetch(`https://huggingface.co/api/models?${params}`);
+        if (!resp.ok) throw new Error(`HuggingFace API error ${resp.status}`);
+        let models = await resp.json();
+
+        // Client-side filters
+        if (typeFilter) models = models.filter(m => _hfModelMatchesType(m, typeFilter));
+        if (maxGb > 0) {
+            models = models.filter(m => {
+                const gb = _hfModelSizeGb(m);
+                return gb === null || gb <= maxGb;
+            });
+        }
+
+        if (statusEl) statusEl.textContent = `${models.length} result${models.length !== 1 ? 's' : ''}`;
+        if (!models.length) {
+            if (resultsEl) {
+                const empty = document.createElement('div');
+                empty.className = 'empty-state';
+                empty.textContent = 'No matching GGUF models found.';
+                resultsEl.appendChild(empty);
+            }
+            return;
+        }
+        models.forEach(m => resultsEl && resultsEl.appendChild(_renderHfModelCard(m)));
+    } catch (err) {
+        if (statusEl) statusEl.textContent = `Search failed: ${err.message}`;
+    }
+}
+
+function _renderHfModelCard(model) {
+    const card = document.createElement('div');
+    card.className = 'lms-model-card';
+
+    const sizeGb = _hfModelSizeGb(model);
+    const sizeText = sizeGb !== null ? `${sizeGb.toFixed(1)} GB` : 'size unknown';
+    const dl = (model.downloads || 0).toLocaleString();
+    const tags = (model.tags || []).filter(t => ['instruct','chat','code','vision','tool-use','thinking','reasoning'].some(k => t.toLowerCase().includes(k)));
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'lms-card-name';
+    nameEl.textContent = model.id || '—';
+    card.appendChild(nameEl);
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'lms-card-meta';
+    metaEl.textContent = `${sizeText} · ${dl} downloads`;
+    card.appendChild(metaEl);
+
+    if (tags.length) {
+        const tagsEl = document.createElement('div');
+        tagsEl.className = 'lms-card-tags';
+        tags.slice(0, 5).forEach(t => {
+            const badge = document.createElement('span');
+            badge.className = 'tag-badge';
+            badge.textContent = t;
+            tagsEl.appendChild(badge);
+        });
+        card.appendChild(tagsEl);
+    }
+
+    const btn = document.createElement('button');
+    btn.className = 'secondary-btn';
+    btn.textContent = 'Download via LM Studio';
+    btn.addEventListener('click', () => _downloadHfModel(model.id || ''));
+    card.appendChild(btn);
+
+    return card;
+}
+
+async function _downloadHfModel(modelId) {
+    const statusEl = document.getElementById('lmstudio-hf-status');
+    if (!window.confirm(`Download "${modelId}" via LM Studio? This will use lms get and may take a while.`)) return;
+    if (statusEl) statusEl.textContent = `Downloading ${modelId}… (check LM Studio for progress)`;
     try {
         const response = await fetch('/api/lmstudio/get', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ model_name: modelId, gguf: true, yes: true }),
         });
         const result = await response.json();
         if (!response.ok) {
             throw new Error(result.detail?.detail || result.detail || 'Download failed');
         }
-        if (statusEl) statusEl.textContent = 'Download command sent.';
-        await loadLmstudioModels();
-    } catch (error) {
-        if (statusEl) statusEl.textContent = `Download failed: ${error.message}`;
+        if (statusEl) statusEl.textContent = `Download started for ${modelId}.`;
+        setTimeout(loadLmstudioModels, 3000);
+    } catch (err) {
+        if (statusEl) statusEl.textContent = `Download failed: ${err.message}`;
     }
 }
 

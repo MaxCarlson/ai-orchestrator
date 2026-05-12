@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sort grep:*)",
+      "Bash(pip show:*)",
+      "Bash(pip3 show:*)",
+      "Bash(/home/mcarls/.pyenv/versions/3.13.7/bin/pip show:*)",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "Bash(curl -s http://localhost:3001/api/chat/models)",
+      "Bash(curl -s http://localhost:3001/api/lmstudio/status)",
+      "Bash(curl -s http://localhost:5080/health)",
+      "Bash(wc:*)",
+      "Bash(./lms_bridge/bridge.sh start:*)",
+      "Bash(curl -s http://localhost:5080/status)",
+      "Bash(./lms_bridge/bridge.sh status:*)",
+      "Read(//tmp/**)",
+      "Bash(./lms_bridge/bridge.sh restart:*)",
+      "Bash(/home/mcarls/projects/ai-orchestrator/lms_bridge/.venv/bin/python -c \"import fastapi; print\\('fastapi ok'\\)\")",
+      "Bash(ls -la /home/mcarls/projects/ai-orchestrator/lms_bridge/.venv/bin/python*)",
+      "Bash(./lms_bridge/bridge.sh stop:*)",
+      "Bash(curl -s http://localhost:5080/models)",
+      "Bash(curl -s http://localhost:3001/api/lmstudio/models)",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); print\\(f'Models: {len\\(data\\)}'\\)\")",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); groups=set\\(m['group'] for m in data['models']\\); print\\('Groups:', groups\\)\")",
+      "Bash"
+    ]
+  }
+}

@@ -79,7 +79,7 @@ export class QueryEngine {
   private readonly sessionStore: SessionStore
   private readonly logger: Logger
   private currentSessionId: string | null = null
-  readonly workingDir: string
+  workingDir: string
 
   constructor(workingDir = process.cwd(), logger?: Logger) {
     this.workingDir = workingDir
@@ -116,15 +116,7 @@ export class QueryEngine {
     const info = await detectProject(this.workingDir)
     if (info) {
       setProjectContext({ info })
-    }
-
-    // Auto-start LM Studio server and pre-load local model at startup
-    const cfg = getConfig()
-    const isLocalModel = !cfg.model.startsWith('claude-') && !cfg.model.startsWith('gemini-') && !/^(gpt-|o1-|o3-)/.test(cfg.model)
-    if (isLocalModel) {
-      for await (const status of ensureLmStudio(cfg.model, cfg.localUrl)) {
-        yield { type: 'status', text: status }
-      }
+      yield { type: 'status', text: `Project: ${info.name} (${this.workingDir})` }
     }
   }
 

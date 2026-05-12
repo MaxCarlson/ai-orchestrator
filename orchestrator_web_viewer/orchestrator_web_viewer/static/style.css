@@ -1555,3 +1555,70 @@ body::before {
 .nav-btn.service-offline {
     opacity: 0.55;
 }
+
+/* ── LM Studio search results ──────────────────────────────────────────────── */
+
+.lms-search-panel { display: flex; flex-direction: column; gap: 12px; }
+
+.lms-filters { flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.lms-filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #94a3b8; }
+
+.lms-search-results {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+    max-height: 480px;
+    overflow-y: auto;
+}
+
+.lms-model-card {
+    background: var(--bg-secondary, #131c2f);
+    border: 1px solid var(--border, #2f3b55);
+    border-radius: 8px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.lms-card-name { font-weight: 600; font-size: 13px; word-break: break-word; }
+.lms-card-meta { font-size: 12px; color: #94a3b8; }
+.lms-card-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.tag-badge {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 9999px;
+    background: rgba(59,130,246,0.2);
+    color: #93c5fd;
+    border: 1px solid rgba(59,130,246,0.3);
+}
+
+.lms-model-card .secondary-btn { margin-top: auto; align-self: flex-start; }
+
+/* Embeddings view — project selector bar */
+.embed-project-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.embed-project-label { font-weight: 500; white-space: nowrap; }
+.embed-project-bar select { min-width: 200px; }
+
+/* Embeddings browse pagination */
+.embed-pagination {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+/* Chunk snippet pre */
+.memory-snippet {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: inherit;
+    font-size: 13px;
+}

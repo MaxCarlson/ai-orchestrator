@@ -12,7 +12,9 @@ router = APIRouter()
 
 
 def _bridge_url() -> str:
-    return os.getenv("KO_WEB_LMS_BRIDGE_URL", "http://host.docker.internal:5080").rstrip("/")
+    # Docker sets KO_WEB_LMS_BRIDGE_URL=http://host.docker.internal:5080 via docker-compose.
+    # When running on the host directly, the bridge is on localhost.
+    return os.getenv("KO_WEB_LMS_BRIDGE_URL", "http://localhost:5080").rstrip("/")
 
 
 async def _proxy(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Any:

@@ -28,6 +28,11 @@ docker compose --env-file "$COMPOSE_EMPTY_ENV" up -d --remove-orphans
 echo "==> Current service status"
 docker compose --env-file "$COMPOSE_EMPTY_ENV" ps
 
+# Start the LM Studio bridge on the host if not already running
+if [ -x "$REPO_ROOT/lms_bridge/bridge.sh" ]; then
+    "$REPO_ROOT/lms_bridge/bridge.sh" start || true
+fi
+
 ORCH_PORT="${ORCHESTRATOR_PORT:-8000}"
 KOWEB_PORT="${KO_WEB_PORT:-3001}"
 CHAT_PORT="${KO_WEB_CHAT_PORT:-8765}"

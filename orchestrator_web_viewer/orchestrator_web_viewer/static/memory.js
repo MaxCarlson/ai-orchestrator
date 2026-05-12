@@ -63,14 +63,6 @@ async function loadMemoryView() {
     }
 }
 
-async function loadEmbeddingsView() {
-    await loadGlobalEmbeddingStats();
-    await loadAstProgress();
-    if (!astProgressTimer) {
-        astProgressTimer = setInterval(loadAstProgress, 5000);
-    }
-}
-
 async function loadProjectTextSources() {
     const projectId = selectedProject;
     const container = document.getElementById('project-sources-list');
@@ -424,4 +416,255 @@ function renderKnowledgeSourceSearchResults(results = []) {
 
 function handleKnowledgeSourceSearch() {
     runKnowledgeSourceSearch(true);
+}
+
+// ---------------------------------------------------------------------------
+// Embeddings view — project selector + per-project chunks/search/browse
+// ---------------------------------------------------------------------------
+
+const EMBED_PAGE_SIZE = 50;
+
+const _embedBrowse = { projectId: null, chunkType: 'text', page: 0, total: 0 };
+
+async function loadEmbeddingsView() {
+    await _loadEmbedProjectOptions();
+    const select = document.getElementById('embed-project-select');
+    _onEmbedProjectChange(select?.value || '__global__');
+}
+
+async function _loadEmbedProjectOptions() {
+    const select = document.getElementById('embed-project-select');
+    if (!select) return;
+    const prev = select.value;
+    while (select.options.length > 1) select.remove(1);
+    try {
+        const response = await fetch('/api/projects');
+        if (!response.ok) return;
+        const payload = await response.json();
+        const projects = payload.projects || payload || [];
+        projects.forEach((p) => {
+            const opt = document.createElement('option');
+            opt.value = p.id || p.project_id || p.name;
+            opt.textContent = p.name || p.id || p.project_id;
+            select.appendChild(opt);
+        });
+        if (prev && Array.from(select.options).some((o) => o.value === prev)) {
+            select.value = prev;
+        }
+    } catch (_e) { /* fall back to global */ }
+}
+
+function _onEmbedProjectChange(projectId) {
+    const projectPanel = document.getElementById('embed-project-panel');
+    const globalPanel = document.getElementById('embed-global-panel');
+    if (!projectPanel || !globalPanel) return;
+    if (!projectId || projectId === '__global__') {
+        projectPanel.classList.add('hidden');
+        globalPanel.classList.remove('hidden');
+        loadGlobalEmbeddingStats();
+        loadAstProgress();
+        if (!astProgressTimer) {
+            astProgressTimer = setInterval(loadAstProgress, 5000);
+        }
+    } else {
+        projectPanel.classList.remove('hidden');
+        globalPanel.classList.add('hidden');
+        _setEmbedChunkStats(0, 0, 0);
+        _clearContainer('embed-search-results');
+        _clearContainer('embed-browse-results');
+        _loadEmbedChunkStats(projectId);
+    }
+}
+
+function _clearContainer(id) {
+    const el = document.getElementById(id);
+    if (el) while (el.firstChild) el.removeChild(el.firstChild);
+}
+
+function _setPlaceholder(id, text) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    while (el.firstChild) el.removeChild(el.firstChild);
+    const div = document.createElement('div');
+    div.className = 'empty-state';
+    div.textContent = text;
+    el.appendChild(div);
+}
+
+async function _loadEmbedChunkStats(projectId) {
+    const statusEl = document.getElementById('embed-project-status');
+    if (statusEl) statusEl.textContent = 'Loading…';
+    try {
+        const [textResp, codeResp] = await Promise.all([
+            fetch(`/api/memory/text-chunks/${encodeURIComponent(projectId)}?limit=1&offset=0`),
+            fetch(`/api/memory/text-chunks/${encodeURIComponent(projectId)}?limit=1&offset=0&chunk_type=code`),
+        ]);
+        let textTotal = 0;
+        let codeTotal = 0;
+        if (textResp.ok) {
+            const d = await textResp.json();
+            textTotal = d.total ?? d.count ?? (d.chunks || []).length;
+        }
+        if (codeResp.ok) {
+            const d = await codeResp.json();
+            codeTotal = d.total ?? d.count ?? (d.chunks || []).length;
+        }
+        _setEmbedChunkStats(textTotal + codeTotal, codeTotal, textTotal);
+        if (statusEl) statusEl.textContent = '';
+    } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+    }
+}
+
+function _setEmbedChunkStats(total, code, text) {
+    [['embed-chunk-total', total], ['embed-chunk-code', code], ['embed-chunk-text', text]].forEach(([id, v]) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = v;
+    });
+}
+
+async function runEmbedSearch() {
+    const select = document.getElementById('embed-project-select');
+    const projectId = select?.value;
+    if (!projectId || projectId === '__global__') return;
+    const queryEl = document.getElementById('embed-search-query');
+    const typeEl = document.getElementById('embed-search-type');
+    const resultsEl = document.getElementById('embed-search-results');
+    const query = queryEl?.value.trim() || '';
+    if (!query) { _setPlaceholder('embed-search-results', 'Enter a search query.'); return; }
+    _setPlaceholder('embed-search-results', 'Searching…');
+    try {
+        const response = await fetch(`/api/memory/text-search/${encodeURIComponent(projectId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, top_k: 10, use_reranker: false, table: typeEl?.value || 'text_chunks' }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || 'Search failed');
+        _renderEmbedChunkList(payload.results || [], 'embed-search-results', true);
+    } catch (e) {
+        _setPlaceholder('embed-search-results', `Error: ${e.message}`);
+    }
+}
+
+async function loadEmbedBrowse(page) {
+    const select = document.getElementById('embed-project-select');
+    const projectId = select?.value;
+    if (!projectId || projectId === '__global__') return;
+    const typeEl = document.getElementById('embed-browse-type');
+    const chunkType = typeEl?.value || 'text';
+    const offset = page * EMBED_PAGE_SIZE;
+    _setPlaceholder('embed-browse-results', 'Loading…');
+    try {
+        const params = new URLSearchParams({ limit: EMBED_PAGE_SIZE, offset });
+        if (chunkType) params.set('chunk_type', chunkType);
+        const response = await fetch(`/api/memory/text-chunks/${encodeURIComponent(projectId)}?${params}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || 'Failed to load chunks');
+        const chunks = payload.chunks || payload.results || [];
+        const total = payload.total ?? payload.count ?? chunks.length;
+        const totalPages = Math.max(1, Math.ceil(total / EMBED_PAGE_SIZE));
+        _embedBrowse.projectId = projectId;
+        _embedBrowse.chunkType = chunkType;
+        _embedBrowse.page = page;
+        _embedBrowse.total = total;
+        const countEl = document.getElementById('embed-browse-count');
+        const pageEl = document.getElementById('embed-browse-page');
+        const prevBtn = document.getElementById('embed-browse-prev');
+        const nextBtn = document.getElementById('embed-browse-next');
+        if (countEl) countEl.textContent = `${total} total`;
+        if (pageEl) pageEl.textContent = `Page ${page + 1} / ${totalPages}`;
+        if (prevBtn) prevBtn.disabled = page === 0;
+        if (nextBtn) nextBtn.disabled = page >= totalPages - 1;
+        _renderEmbedChunkList(chunks, 'embed-browse-results', false);
+    } catch (e) {
+        _setPlaceholder('embed-browse-results', `Error: ${e.message}`);
+    }
+}
+
+function _renderEmbedChunkList(items, containerId, showSimilarity) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    while (container.firstChild) container.removeChild(container.firstChild);
+    if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.textContent = 'No results.';
+        container.appendChild(empty);
+        return;
+    }
+    const frag = document.createDocumentFragment();
+    items.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'memory-card';
+
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'memory-content';
+        const raw = item.content || item.text || '';
+        const snippet = raw.length > 300 ? raw.slice(0, 300) + '…' : raw;
+        const pre = document.createElement('pre');
+        pre.className = 'memory-snippet';
+        pre.textContent = snippet;
+        contentDiv.appendChild(pre);
+
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'memory-meta';
+
+        const addMeta = (label, value) => {
+            if (!value) return;
+            const span = document.createElement('span');
+            span.textContent = `${label}: ${value}`;
+            metaDiv.appendChild(span);
+        };
+        addMeta('Type', item.chunk_type);
+        addMeta('Source', item.source_label || item.original_filename || item.file_path);
+        if (item.header_context) addMeta('Header', item.header_context);
+        if (showSimilarity && item.similarity !== undefined) {
+            addMeta('Similarity', Number(item.similarity).toFixed(3));
+        }
+
+        card.appendChild(contentDiv);
+        card.appendChild(metaDiv);
+        frag.appendChild(card);
+    });
+    container.appendChild(frag);
+}
+
+async function handleProjectEmbedSubmit(event) {
+    event.preventDefault();
+    const select = document.getElementById('embed-project-select');
+    const projectId = select?.value;
+    if (!projectId || projectId === '__global__') return;
+    const modeEl = document.getElementById('project-embed-mode');
+    const forceEl = document.getElementById('project-embed-force');
+    const statusEl = document.getElementById('project-embed-status');
+    if (statusEl) statusEl.textContent = 'Starting re-index…';
+    try {
+        const response = await fetch(`/api/project-tracking/${encodeURIComponent(projectId)}/index`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: modeEl?.value || 'auto', force: Boolean(forceEl?.checked) }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || 'Re-index failed');
+        if (statusEl) statusEl.textContent = payload.message || 'Re-index started.';
+    } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+    }
+}
+
+function setupEmbeddingsControls() {
+    const projectSelect = document.getElementById('embed-project-select');
+    if (projectSelect) {
+        projectSelect.addEventListener('change', (e) => _onEmbedProjectChange(e.target.value));
+    }
+    document.getElementById('embed-refresh-btn')?.addEventListener('click', loadEmbeddingsView);
+    document.getElementById('embed-search-btn')?.addEventListener('click', runEmbedSearch);
+    document.getElementById('embed-search-query')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') runEmbedSearch();
+    });
+    document.getElementById('embed-browse-btn')?.addEventListener('click', () => loadEmbedBrowse(0));
+    document.getElementById('embed-browse-prev')?.addEventListener('click', () => loadEmbedBrowse(_embedBrowse.page - 1));
+    document.getElementById('embed-browse-next')?.addEventListener('click', () => loadEmbedBrowse(_embedBrowse.page + 1));
+    document.getElementById('project-embed-form')?.addEventListener('submit', handleProjectEmbedSubmit);
 }

@@ -8,7 +8,7 @@
 
     // DOM refs — resolved lazily when the view first activates
     var messageList, inputEl, sendBtn, statusEl, toolProgress,
-        modelSelect, logList, logClearBtn
+        modelSelect, logList, logClearBtn, workdirEl
 
     var ws = null
     var streaming = false
@@ -41,9 +41,10 @@
         sendBtn      = document.getElementById('chat-btn-send')
         statusEl     = document.getElementById('chat-conn-status')
         toolProgress = document.getElementById('chat-tool-progress')
-        modelSelect  = document.getElementById('model-select')
+        modelSelect  = document.getElementById('chat-model-select')
         logList      = document.getElementById('chat-log-list')
         logClearBtn  = document.getElementById('chat-btn-log-clear')
+        workdirEl    = document.getElementById('chat-workdir')
 
         bindUI()
         loadModels()
@@ -134,6 +135,16 @@
         // Refresh model list (re-queries LM Studio for currently loaded models)
         document.getElementById('chat-btn-refresh-models').addEventListener('click', loadModels)
 
+        // Folder picker — change working directory
+        document.getElementById('chat-btn-folder').addEventListener('click', function () {
+            var current = workdirEl ? workdirEl.textContent : ''
+            var newDir = window.prompt('Working directory:', current || '')
+            if (!newDir || !newDir.trim()) return
+            if (ws && ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'set_workdir', dir: newDir.trim() }))
+            }
+        })
+
         // Toolbar action buttons
         document.getElementById('chat-btn-clear').addEventListener('click', function () {
             if (streaming || !ws || ws.readyState !== 1) return
@@ -176,7 +187,15 @@
 
     function connect() {
         ws = new WebSocket(WS_URL)
-        ws.addEventListener('open', function () { setStatus('connected') })
+        ws.addEventListener('open', function () {
+            setStatus('connected')
+            // Switch to the user's last-selected model so the server doesn't stay on its default
+            var model = modelSelect ? modelSelect.value : ''
+            if (model && model !== '' && ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'message', text: '/model ' + model }))
+                setStreaming(true)
+            }
+        })
         ws.addEventListener('close', function () {
             setStatus('disconnected')
             setTimeout(connect, 2500)
@@ -255,6 +274,10 @@
 
         } else if (event.type === 'status' && event.text) {
             appendChatMsg('system', event.text)
+
+        } else if (event.type === 'workdir_changed' && event.dir) {
+            if (workdirEl) workdirEl.textContent = event.dir  // safe: textContent
+            appendChatMsg('system', 'Working directory: ' + event.dir)
         }
     }
 
@@ -412,6 +435,13 @@
             sendBtn.disabled = false
             inputEl.focus()
         }
+    }
+
+    // If app.js restored the chat view before this script ran, chatViewActivated
+    // was undefined at that moment — call it now.
+    if (document.getElementById('chat-view') &&
+        document.getElementById('chat-view').classList.contains('active')) {
+        window.chatViewActivated()
     }
 
 })()
