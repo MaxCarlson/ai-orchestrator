@@ -16,6 +16,15 @@ adding new architecture.
 - [ ] Queue one text-index job for docs/README content and confirm `text_chunks` rows.
 - [ ] Confirm code/text search endpoints return relevant snippets.
 
+## P3 - Memory Wiring (after P2 is confirmed working)
+- [ ] Add `kind TEXT` column to `memory_items` and `global_memory_items` (see `memory/PLAN.md` Phase 1 for migration SQL).
+- [ ] Add `kinds` filter to `dense_search()` and `hybrid_search()` in `memory/retrieval.py`.
+- [ ] Add `GET /memory/search` endpoint to `docker/orchestrator/main.py`.
+- [ ] Wire context injection into `chat/src/QueryEngine.ts` — call the search endpoint before each `submit()`, inject as `<memory>` block, cap at ~1500 tokens, soft-fail if DB unreachable.
+- [ ] Create `memory/notes/projects/ai-orchestrator/` with starter `overview.md` and `decisions/`.
+- [ ] Write `memory/ingest_notes.py` CLI to ingest `memory/notes/` into `text_chunks` via existing `source_ingestion.py`.
+- [ ] Write `memory/promote_candidate.py` CLI to approve `memory/review/*.candidate.md` into `memory_items`.
+
 ## Validation Commands
 
 ```bash

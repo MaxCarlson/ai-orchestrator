@@ -2,8 +2,7 @@
 
 This directory implements the **Hierarchical Memory System** for the AI Orchestrator.
 
-The goal of this subsystem is to provide **long-lived, structured, vector-searchable memory**
-that can be:
+The goal is to provide **long-lived, structured, vector-searchable memory** that can be:
 
 - Shared across LLMs and CLIs
 - Organized hierarchically (Global → Projects → Tasks → Categories)
@@ -11,83 +10,103 @@ that can be:
 - Populated automatically by the orchestrator or manually by the user
 - Continuously refined via usage, decay, and explicit feedback
 
-This is **not** a chat history store.
-
-This is **working memory + long-term knowledge** for the orchestrator ecosystem.
+This is **not** a chat history store. This is working memory + long-term knowledge for the orchestrator ecosystem.
 
 ---
 
 ## High-Level Architecture
 
-PostgreSQL
-- memory_items (content + embedding + metadata)
-- categories (semantic / user-defined groupings)
-- memory_categories (many-to-many mapping)
-- vector index (pgvector)
-
+```
 RTX 5090
-- Code embedding models
-- Text / design embedding models
-- Batch indexing jobs
+  └─ code_chunking / code_embeddings / embed_repo
+       └─ code_chunks (768-dim, CodeBERT)
 
-AI Orchestrator
-- Decides what becomes memory
-- Enforces quotas and retention
-- Routes memory into LLM prompts
-- Accepts user feedback on memory quality
+source_ingestion / langchain_loaders+splitters
+  └─ text_chunks (768-dim, BGE)
+
+memory_items
+  └─ durable named memories (decisions, notes, session summaries)
+
+retrieval.py
+  ├─ dense_search()      pgvector cosine similarity
+  ├─ BM25 sparse         rank-bm25, 5-min in-process cache
+  ├─ _rrf_merge()        Reciprocal Rank Fusion
+  └─ hybrid_search()     RRF → optional CrossEncoder reranking → top-k
+
+AI Orchestrator (FastAPI)
+  └─ manages task dispatch, quota enforcement, API surface
+
+MemoryManager (manager.py)
+  └─ insert / search / feedback / access tracking over memory_items
+```
 
 ---
 
 ## Files in This Directory
 
-### __init__.py
-Package marker for the memory subsystem.
+### `__init__.py`
+Package marker.
 
-### models.py
-Defines the PostgreSQL schema for:
-- memory_items
-- categories
-- memory_categories
-- vector indexes (pgvector)
+### `models.py`
+Authoritative PostgreSQL schema. Tables defined here:
+- `memory_items` — durable named memories with embedding, project/task/system scope, access count, and user feedback
+- `global_memory_items` — cross-project memories keyed by `source_key`
+- `categories` / `memory_categories` — many-to-many category tagging on `memory_items`
+- `global_memory_categories` — same for global items
+- `code_chunks` / `global_code_chunks` — AST-chunked code with 768-dim CodeBERT embeddings
+- `text_chunks` / `global_text_chunks` — prose/doc chunks with 768-dim BGE embeddings
+- `project_text_sources` — registry of ingested source files per project
+- `embedding_models` — registry seeded with BGE (text), CodeBERT (code), ms-marco (rerank)
+- `embedding_runs` — audit log of indexing jobs
 
-This file is the **authoritative schema definition**.
+### `vector_store.py`
+Low-level pgvector abstraction (`VectorStore` / `PgVectorStore`). Cosine similarity via the `<=>` operator. Prefer `retrieval.py` for new code.
 
-### vector_store.py
-Vector search abstraction layer.
+### `retrieval.py`
+**Primary retrieval interface.** Call `hybrid_search()` for all new retrieval.
 
-Current implementation:
-- PostgreSQL + pgvector
-- Cosine similarity
-- SQL metadata filtering
+- `dense_search()` — pgvector cosine similarity on `text_chunks` or `global_text_chunks`
+- BM25 sparse retrieval via `rank-bm25` with a 5-minute in-process TTL cache
+- `_rrf_merge()` — Reciprocal Rank Fusion (k=60) combining dense and sparse lists
+- `hybrid_search()` — dense + BM25 + RRF + optional CrossEncoder reranking → top-k results with `similarity`, `bm25_score`, `rrf_score`, `rerank_score`
+- `invalidate_bm25_cache()` — call after any ingest to keep BM25 fresh
 
-Designed so that Qdrant / Weaviate / Milvus can replace pgvector later.
+### `manager.py`
+High-level `MemoryManager` API over `memory_items`.
 
-### manager.py
-High-level MemoryManager API.
+- `initialize_schema()` — idempotent schema creation; safe to run on startup
+- `add_memory()` — insert a memory item with optional categories
+- `search()` — cosine similarity search with project/system/task/category filters; updates access count on every hit
+- `update_feedback()` — record user feedback score (positive = valuable, negative = bad)
 
-Responsibilities:
-- Schema initialization
-- Memory insertion
-- Similarity search
-- Access tracking
-- User feedback handling
+Use `memory_items` for durable named memories. For code/text RAG retrieval use `code_chunks`/`text_chunks` via `retrieval.py`.
 
-This is the primary interface used by:
-- Orchestrator
-- CLI tools
-- LLM agents
+### `source_ingestion.py`
+Ingestion pipeline for project text sources. Handles `.md`, `.txt`, `.rst`, `.pdf`, `.json`/`.ndjson` (conversation exports). Tracks ingested files in `project_text_sources`, stores chunks in `text_chunks`. Supports project-scoped and global-scoped ingestion.
 
-### embed_repo.py
-GPU-powered repository indexing tool.
+### `code_chunking.py`
+AST-based Python chunker. Produces symbol-level chunks (functions, classes, methods) with safe fallbacks for unparseable files.
 
-Responsibilities:
-- Walk a repository tree
-- Classify files (code vs prose)
-- Chunk content
-- Generate embeddings using specialized models
-- Store embeddings as project-scoped memories
+### `code_embeddings.py`
+CodeBERT (768-dim) embedder with GPU/CPU fallback. Used by `code_indexer.py`.
 
-Designed to run on the **RTX 5090** as a background job.
+### `code_indexer.py`
+Incremental hash-based indexer. Skips files whose content hash matches an existing `code_chunks` row; only re-embeds changed symbols.
+
+### `code_search.py`
+Vector search over `code_chunks` for a given project.
+
+### `embed_repo.py`
+GPU-powered repository indexing tool. Walks a repo tree, classifies files (code vs prose), chunks, embeds, and stores as project-scoped memories. Designed to run on the RTX 5090 as a background job.
+
+### `conversation_ingest.py`
+Normalizes and ingests conversation exports (Claude, ChatGPT, etc.) into `text_chunks`.
+
+### `langchain_loaders.py` / `langchain_splitters.py`
+LangChain document loaders and text splitters used by `source_ingestion.py`.
+
+### `model_registry.py` / `text_embeddings.py`
+Embedding model loading and inference helpers. Models are registered in the `embedding_models` DB table.
 
 ---
 
@@ -95,67 +114,51 @@ Designed to run on the **RTX 5090** as a background job.
 
 Memories are logically organized as:
 
+```
 Global
-- System
-- Projects
-  - Project A
-    - Tasks
-      - Subtasks
-  - Project B
-- Categories
-  - Physics
-  - PostgreSQL
-  - CUDA
+└─ Projects
+   ├─ Project A
+   │  └─ Tasks / Subtasks
+   └─ Project B
+Categories (cross-cutting)
+   ├─ Physics
+   ├─ PostgreSQL
+   └─ CUDA
+```
 
-Important notes:
-- Hierarchy is **logical**, not rigidly enforced
-- Relationships are expressed via metadata + categories
+- Hierarchy is **logical**, not rigidly enforced in the schema
+- Relationships are expressed via `project_id`, `task_id`, and the `memory_categories` join table
 - A memory may belong to multiple categories
-- Project quotas and category quotas are enforced independently
+- `memory_items` vs `global_memory_items`: project-scoped vs cross-project
 
 ---
 
-## What This Folder Does NOT Do (Yet)
+## Retrieval Pipeline
 
-- Does not auto-run at orchestrator startup
-- Does not yet enforce eviction or decay
-- Does not expose FastAPI endpoints by itself
-- Does not enqueue indexing jobs automatically
-
-Those responsibilities belong to the **AI Orchestrator** and **task queue**.
-
----
-
-## Intended Usage Flow
-
-1. User creates a project via kmtui
-2. User or orchestrator requests repository indexing
-3. Orchestrator enqueues a task
-4. embed_repo.py runs on the RTX 5090
-5. Embeddings are stored in PostgreSQL
-6. LLMs and CLIs query memory directly
-7. Orchestrator monitors usage and feedback
-8. Memory is retained, decayed, or evicted
+```
+user query
+    │
+    ├─► dense_search()     pgvector cosine similarity
+    │
+    ├─► BM25 sparse        rank-bm25, 5-min TTL cache, tokenized content
+    │
+    ├─► _rrf_merge()       Reciprocal Rank Fusion (k=60)
+    │
+    └─► hybrid_search()    RRF candidates → optional CrossEncoder reranking
+                           → top-k with similarity / bm25_score / rrf_score
+```
 
 ---
 
 ## Design Principles
 
-- PostgreSQL is the source of truth
-- Vector DB is an implementation detail
-- Memory decisions are agent-driven
-- Users are always informed when memory is created
-- Users can override memory decisions
+- PostgreSQL is the source of truth; the vector index is regenerable
+- `VectorStore` is an abstraction — pgvector is the current implementation
+- Memory decisions are agent-driven but human-approved; nothing is auto-written to `memory_items` without review
+- Retrieved context is labeled as data, never as instructions
 
 ---
 
 ## Status
 
-- Schema defined
-- Vector search implemented
-- GPU embedding pipeline implemented
-- Orchestrator integration pending
-- Task queue wiring pending
-- Retention enforcement pending
-
-See PLAN.md for integration steps.
+See `PLAN.md` for what is not yet implemented and the sequenced steps to get there.
