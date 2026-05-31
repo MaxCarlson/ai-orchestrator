@@ -116,7 +116,7 @@ export class QueryEngine {
     const info = await detectProject(this.workingDir)
     if (info) {
       setProjectContext({ info })
-      yield { type: 'status', text: `Project: ${info.name} (${this.workingDir})` }
+      yield { type: 'status', text: `Project: ${info.projectName} (${this.workingDir})` }
     }
   }
 
@@ -168,6 +168,7 @@ export class QueryEngine {
     const isGemini      = model.startsWith('gemini-')
     const isClaude      = model.startsWith('claude-')
     const isOpenAICloud = /^(gpt-|o1-|o3-)/.test(model)
+    const isLocal       = !isGemini && !isClaude && !isOpenAICloud
 
     // Enable extended thinking for Anthropic models that support it (opus-4, sonnet-4+)
     const thinkingEnabled = isClaude && /claude-(opus|sonnet)-[4-9]/.test(model)
@@ -177,6 +178,20 @@ export class QueryEngine {
     this.logger.systemPrompt(model, this.workingDir, fullSystemPrompt)
 
     const baseOptions = { model, maxTurns, systemPrompt: fullSystemPrompt, abortSignal, workingDir: this.workingDir, logger: this.logger }
+
+    if (isLocal) {
+      const readiness = ensureLmStudio(model, localUrl)
+      let ready = false
+      while (true) {
+        const next = await readiness.next()
+        if (next.done) {
+          ready = next.value
+          break
+        }
+        yield { type: 'status', text: next.value }
+      }
+      if (!ready) return
+    }
 
     const loop = isGemini
       ? queryLoopGemini(this.messages, this.tools, baseOptions)

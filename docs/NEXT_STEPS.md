@@ -1,27 +1,30 @@
-# AI Orchestrator - Short-Term Task List
+# AI Orchestrator - Current Execution Priorities
 
-This file tracks a small, actively-managed set of tasks. It is derived from the
-broader plans in `ai-orchestrator-briefing.md`, `GOALS.md`, and `memory/*`.
-Keep this list short, update status as work progresses, and check items off when done.
+Keep this list short. The current goal is to prove the built core works before
+adding new architecture.
 
-## Active Priorities
+## P1 - Local Model Chat
+- [x] Fix `aioc` project status startup type error.
+- [x] Make `aioc --serve` start the WebSocket chat server.
+- [x] Check LM Studio readiness before local OpenAI-compatible requests.
+- [ ] Verify a real loaded LM Studio model can answer through `aioc`.
+- [ ] Verify web chat streams through `/ws/chat` with the same model.
 
-### P1 - GPU Code Indexing (RTX 5090)
-- [x] Define code-aware indexing schema (code_chunks + indexes).
-- [x] Implement Python AST chunker (symbol-level) with safe fallbacks.
-- [x] Add code embedding adapter (CodeBERT 768-dim) with GPU/CPU fallback.
-- [x] Build incremental indexer (hash-based skip, project_id scope).
-- [x] Add retrieval API (vector-only).
-- [x] Wire orchestrator pre-dispatch context injection using code search.
-- [ ] Run first GPU indexing job against a tracked repo.
-- [ ] Validate code-search results in queued task payloads.
+## P2 - Runtime + Indexing Proof
+- [ ] Start or verify `bin/local_worker_loop.sh` on the host.
+- [ ] Queue one code-index job for this repo and confirm `code_chunks` rows.
+- [ ] Queue one text-index job for docs/README content and confirm `text_chunks` rows.
+- [ ] Confirm code/text search endpoints return relevant snippets.
 
-### P2 - KM/KMTUI Host DB Consistency
-- [ ] Standardize env config for KM/KMTUI/KOWEB to point to WSL2 host DB.
-- [ ] Validate KM actions in CLI + Web UI still hit the hoster database.
+## Validation Commands
 
-## Notes
+```bash
+cd chat && ~/.bun/bin/bun run typecheck
+cd chat && ~/.bun/bin/bun test
+env -u PYTHONHOME -u PYTHONSTARTUP PYTHONPATH=. pytest \
+  tests/test_conversation_ingest.py tests/test_retrieval.py \
+  tests/test_source_ingestion.py tests/test_system_stats.py
+```
 
-- The long-form historical plan for code-aware indexing is archived at
-  `docs/archive/memory_advanced-code-embedding-implementation-plan.md`.
-- When the list grows, split into multiple short lists and link them here.
+If a local WebSocket test fails only in a sandboxed agent environment, rerun it
+from a normal host shell; the sandbox may block listening sockets.

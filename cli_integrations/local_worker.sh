@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+# Host shells may export pyenv or other Python paths that poison repo-local
+# embedding jobs. Keep command execution on the selected PATH, but clear Python
+# import/runtime overrides before running task commands.
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP 2>/dev/null || true
+
 TASK_ID="${1:-}"
 if [ -z "$TASK_ID" ]; then
     echo "Error: Task ID required" >&2
@@ -98,7 +103,8 @@ if [ $EXIT_CODE -eq 0 ]; then
        --argjson duration "$DURATION" \
        --arg output "$RESULTS_DIR/" \
        --arg summary "$SUMMARY" \
-       '.completed_at = $completed |
+       '.status = "completed" |
+        .completed_at = $completed |
         .duration_seconds = $duration |
         .result = {
           "success": true,
@@ -115,7 +121,8 @@ else
        --argjson exit_code "$EXIT_CODE" \
        --argjson duration "$DURATION" \
        --arg error_msg "$SUMMARY" \
-       '.failed_at = $failed |
+       '.status = "failed" |
+        .failed_at = $failed |
         .duration_seconds = $duration |
         .exit_code = $exit_code |
         .error = {

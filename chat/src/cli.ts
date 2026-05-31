@@ -71,8 +71,15 @@ const workingDir = values.dir ?? process.cwd()
 const initialMessage = positionals.length > 0 ? positionals.join(' ') : undefined
 
 if (values.serve) {
-  console.error('WebSocket server not yet implemented. Run without --serve for TUI mode.')
-  process.exit(1)
+  const { startChatServer } = await import('./server.js')
+  startChatServer({
+    port: values.port,
+    dir: workingDir,
+    noProject: values['no-project'],
+    noEmbeddings: values['no-embeddings'],
+    model: typeof values.model === 'string' ? values.model : undefined,
+    log: typeof values.log === 'string' ? values.log : null,
+  })
 } else {
   // TUI mode — dynamic imports to avoid loading Ink until needed
   const { default: React } = await import('react')

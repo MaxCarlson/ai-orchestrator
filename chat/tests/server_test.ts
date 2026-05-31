@@ -1,16 +1,46 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test'
 
-const TEST_PORT = 8766
+let testPort = 0
 
 let serverProcess: ReturnType<typeof Bun.spawn> | null = null
 
+function randomTestPort(): number {
+  return 20_000 + Math.floor(Math.random() * 30_000)
+}
+
+async function waitForServer(url: string, timeoutMs = 4000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url)
+      if (res.ok) return
+    } catch {
+      // Server is not accepting connections yet.
+    }
+    await new Promise(r => setTimeout(r, 100))
+  }
+  throw new Error(`server did not become ready: ${url}`)
+}
+
 beforeAll(async () => {
-  serverProcess = Bun.spawn(
-    [process.execPath, 'run', 'src/server.ts', '--port', String(TEST_PORT)],
-    { cwd: import.meta.dir + '/..', stderr: 'ignore', stdout: 'ignore' },
-  )
-  await new Promise(r => setTimeout(r, 500))
-})
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < 5; attempt++) {
+    testPort = randomTestPort()
+    serverProcess = Bun.spawn(
+      [process.execPath, 'run', 'src/server.ts', '--port', String(testPort)],
+      { cwd: import.meta.dir + '/..', stderr: 'ignore', stdout: 'ignore' },
+    )
+    try {
+      await waitForServer(`http://localhost:${testPort}/`)
+      return
+    } catch (err) {
+      lastError = err
+      serverProcess.kill()
+      serverProcess = null
+    }
+  }
+  throw lastError
+}, 25_000)
 
 afterAll(() => {
   serverProcess?.kill()
@@ -18,7 +48,7 @@ afterAll(() => {
 
 describe('chat WebSocket server', () => {
   it('responds to /help with command_output event', async () => {
-    const ws = new WebSocket(`ws://localhost:${TEST_PORT}`)
+    const ws = new WebSocket(`ws://localhost:${testPort}`)
 
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timeout')), 4000)

@@ -12,11 +12,17 @@ aioc                          # Start interactive TUI
 aioc "ask something"          # Start with initial message
 aioc -m claude-opus-4-6       # Use a specific model
 aioc --no-project             # Skip project auto-detection
+aioc --serve --port 8765      # Start WebSocket chat server for the web UI
 
-# Start web chat UI
+# Shortest local-model chat path
+./lms_bridge/bridge.sh start  # optional host-side LM Studio control API
+curl http://localhost:1234/v1/models
+aioc -m <loaded-lmstudio-model>
+
+# Start web chat UI without Docker
 bun run chat:serve            # terminal 1: TypeScript WS server (port 8765)
-uv run python -m orchestrator_web_viewer.main  # terminal 2: FastAPI (port 8000)
-# Open http://localhost:8000/chat
+uv run python -m orchestrator_web_viewer.main  # terminal 2: koweb/FastAPI
+# Open the koweb URL printed by the server, usually http://localhost:3001
 
 # Build + start everything with one command
 ./build/build_all.sh
@@ -55,6 +61,16 @@ docker compose up -d koweb
 ./lms_bridge/bridge.sh status
 export KO_WEB_LMS_BRIDGE_URL=http://localhost:5080
 
+# Host-side local worker for queued indexing/local jobs
+TASK_QUEUE_PATH="$PWD/task_queue" bin/local_worker_loop.sh
+
+# Validation commands
+cd chat && ~/.bun/bin/bun run typecheck
+cd chat && ~/.bun/bin/bun test
+env -u PYTHONHOME -u PYTHONSTARTUP PYTHONPATH=. pytest \
+  tests/test_conversation_ingest.py tests/test_retrieval.py \
+  tests/test_source_ingestion.py tests/test_system_stats.py
+
 # Show Docker info
 ./build/info.sh
 ```
@@ -68,10 +84,12 @@ unless you name a specific service.
 
 **End-to-End Usage:**
 1. Start services: `cd ~/projects/ai-orchestrator && docker compose up -d`
-2. Open kmtui: `kmtui` (in another terminal)
-3. Select a task and press `Ctrl+A` to assign to AI
-4. Watch orchestrator logs: `docker compose logs -f orchestrator`
-5. Check results: `cat task_queue/results/<task-id>/output.txt`
+2. Start the host local worker if you plan to run `local` indexing jobs:
+   `TASK_QUEUE_PATH="$PWD/task_queue" bin/local_worker_loop.sh`
+3. Open kmtui: `kmtui` (in another terminal)
+4. Select a task and press `Ctrl+A` to assign to AI
+5. Watch orchestrator logs: `docker compose logs -f orchestrator`
+6. Check results: `cat task_queue/results/<task-id>/output.txt`
 
 ## Architecture Overview
 
