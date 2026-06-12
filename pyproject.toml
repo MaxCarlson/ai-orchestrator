@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-orchestrator"
+version = "0.1.0"
+description = "AI Orchestrator — host-side memory pipeline, task queue, and tooling"
+requires-python = ">=3.11"
+dependencies = [
+    # Async PostgreSQL
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.9",
+
+    # Embeddings & ML (host-side, GPU-accelerated)
+    "numpy>=1.26",
+    "sentence-transformers>=2.7.0",
+    "torch>=2.0.0",
+
+    # HTTP / API clients
+    "httpx>=0.27.0",
+    "openai>=1.12.0",
+    "anthropic>=0.18.1",
+
+    # RAG pipeline
+    "langchain>=0.2.0",
+    "langchain-community>=0.2.0",
+    "langchain-text-splitters>=0.2.0",
+    "langchain-core>=0.2.0",
+    "rank-bm25>=0.2.2",
+
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "aiofiles>=23.2.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.4.0",
+    "black>=24.0.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+orch = "bin.orch:main"
+
+[tool.setuptools.packages.find]
+include = ["memory*", "shared*", "cli_integrations*"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.black]
+line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

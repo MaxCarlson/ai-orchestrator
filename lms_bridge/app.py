@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LM Studio CLI bridge for web UI control.
-Runs lms.exe commands on the host and exposes a small HTTP API.
+Runs lms commands on the host and exposes a small HTTP API.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
-LMS_BINARY = os.getenv("LMS_BINARY", "lms.exe")
+LMS_BINARY = os.getenv("LMS_BINARY", "lms")
 LMS_HOST = os.getenv("LMS_HOST")
 LMS_PORT = os.getenv("LMS_PORT")
 

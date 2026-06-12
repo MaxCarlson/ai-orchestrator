@@ -47,20 +47,26 @@ VENV_PY=".venv/bin/python"
 export LMS_HOST="${LMS_HOST:-127.0.0.1}"
 export LMS_PORT="${LMS_PORT:-1234}"
 
-# Auto-detect lms.exe from common WSL2 Windows-side installation paths
-# if LMS_BINARY is not explicitly set or isn't on PATH.
-if [ "${LMS_BINARY:-lms.exe}" = "lms.exe" ] && ! command -v lms.exe >/dev/null 2>&1; then
-    for _candidate in \
-        "/mnt/c/Users/$USER/.lmstudio/bin/lms.exe" \
-        /mnt/c/Users/*/.lmstudio/bin/lms.exe \
-        "/mnt/c/Program Files/LM-Studio/bin/lms.exe"
-    do
-        if [ -x "$_candidate" ]; then
-            LMS_BINARY="$_candidate"
-            break
-        fi
-    done
+# Resolve lms binary: prefer native Linux install, fall back to WSL2 Windows-side paths.
+if [ -z "${LMS_BINARY:-}" ]; then
+    if command -v lms >/dev/null 2>&1; then
+        LMS_BINARY="lms"
+    elif [ -x "$HOME/.lmstudio/bin/lms" ]; then
+        LMS_BINARY="$HOME/.lmstudio/bin/lms"
+    else
+        # Legacy WSL2 Windows-side fallback
+        for _candidate in \
+            "/mnt/c/Users/$USER/.lmstudio/bin/lms.exe" \
+            /mnt/c/Users/*/.lmstudio/bin/lms.exe \
+            "/mnt/c/Program Files/LM-Studio/bin/lms.exe"
+        do
+            if [ -x "$_candidate" ]; then
+                LMS_BINARY="$_candidate"
+                break
+            fi
+        done
+    fi
 fi
-export LMS_BINARY="${LMS_BINARY:-lms.exe}"
+export LMS_BINARY="${LMS_BINARY:-lms}"
 
 exec "$VENV_PY" -m uvicorn app:app --host 0.0.0.0 --port 5080

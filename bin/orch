@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""
+orch - AI Orchestrator project management CLI
+
+Usage:
+  orch project register [PATH] [-n NAME] [--no-gpu] [--no-embeddings] [--no-auto-index]
+  orch project list
+  orch project info NAME_OR_ID
+  orch project set-repo PROJECT_ID REPO_PATH
+  orch project index PROJECT_ID [--mode auto|code|text]
+  orch project embedding PROJECT on|off
+  orch project auto-index PROJECT on|off
+  orch task list [--limit N]
+  orch task priority TASK_ID 1..5
+  orch task cancel TASK_ID
+  orch control pause|resume all|embeddings|local-models
+  orch control limits [--gpu-util PCT] [--vram-mb MB]
+  orch stats
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+from urllib import request, error
+
+ORCH_URL = os.getenv("ORCH_URL", "http://localhost:8000")
+KMPROJ_FILE = ".kmproj"
+
+
+# ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+def _request(method: str, path: str, body: dict | None = None) -> Any:
+    url = f"{ORCH_URL}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except error.HTTPError as e:
+        body_text = e.read().decode(errors="replace")
+        try:
+            detail = json.loads(body_text).get("detail", body_text)
+        except Exception:
+            detail = body_text
+        print(f"Error {e.code}: {detail}", file=sys.stderr)
+        sys.exit(1)
+    except error.URLError as e:
+        print(f"Cannot reach orchestrator at {ORCH_URL}: {e.reason}", file=sys.stderr)
+        print("Is the stack running? Try: bash build/start.sh", file=sys.stderr)
+        sys.exit(1)
+
+
+def _get(path: str) -> Any:
+    return _request("GET", path)
+
+
+def _post(path: str, body: dict) -> Any:
+    return _request("POST", path, body)
+
+
+def _resolve_repo_path(args: argparse.Namespace) -> Path:
+    value = getattr(args, "repo_path", None) or getattr(args, "path", None)
+    if getattr(args, "cwd", False) or not value:
+        value = str(Path.cwd())
+    return Path(value).expanduser().resolve()
+
+
+def _derive_project_name(repo: Path, explicit_name: str | None = None) -> str:
+    if explicit_name:
+        return explicit_name.strip()
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return Path(result.stdout.strip()).name
+    except OSError:
+        pass
+    return repo.name
+
+
+def _find_project(name_or_id: str) -> dict:
+    projects = _get("/projects/tracking")
+    for p in projects:
+        if p.get("project_id") == name_or_id or p.get("name", "").lower() == name_or_id.lower():
+            return p
+    return _get(f"/projects/{name_or_id}/tracking")
+
+
+# ── Formatting helpers ─────────────────────────────────────────────────────────
+
+def _fmt_row(label: str, value: Any) -> None:
+    if value is not None and value != "" and value != []:
+        print(f"  {label:<28} {value}")
+
+
+def _print_tracking(data: dict) -> None:
+    _fmt_row("project_id", data.get("project_id"))
+    _fmt_row("name", data.get("name"))
+    _fmt_row("repo_path", data.get("repo_path"))
+    _fmt_row("is_tracked", data.get("is_tracked"))
+    _fmt_row("embedding_status", data.get("embedding_status"))
+    _fmt_row("embedding_last_indexed", data.get("embedding_last_indexed"))
+    _fmt_row("embedding_enabled", data.get("embedding_enabled"))
+    _fmt_row("auto_index_enabled", data.get("auto_index_enabled"))
+    _fmt_row("gpu_enabled", data.get("gpu_enabled"))
+    _fmt_row("gpu_device", data.get("gpu_device"))
+    _fmt_row("resource_profile_id", data.get("resource_profile_id"))
+    _fmt_row("notes", data.get("notes"))
+
+
+def _write_kmproj(project_id: str, name: str, repo_path: Path | None) -> None:
+    """Write a .kmproj file in the repo root for auto-detection."""
+    target = (repo_path or Path.cwd()) / KMPROJ_FILE
+    target.write_text(json.dumps({"project_id": project_id, "name": name}, indent=2) + "\n")
+    print(f"  Wrote {target}")
+
+
+# ── Subcommands ───────────────────────────────────────────────────────────────
+
+def cmd_project_register(args: argparse.Namespace) -> None:
+    repo = _resolve_repo_path(args)
+    name = _derive_project_name(repo, args.name)
+    payload: dict = {
+        "name": name,
+        "repo_path": str(repo),
+        "gpu_enabled": not args.no_gpu,
+        "embedding_enabled": not args.no_embeddings,
+        "auto_index_enabled": not args.no_auto_index,
+        "approved": True,
+        "approved_by": "orch-cli",
+    }
+    if args.notes:
+        payload["notes"] = args.notes
+
+    result = _post("/projects", payload)
+    print(f"\nRegistered project '{result['name']}'")
+    _print_tracking(result)
+    auto_index = result.get("auto_index")
+    if auto_index:
+        print(f"  auto_index_status            {auto_index.get('status')}")
+        if auto_index.get("task_id"):
+            print(f"  auto_index_task              {auto_index.get('task_id')}")
+        elif auto_index.get("reason"):
+            print(f"  auto_index_reason            {auto_index.get('reason')}")
+
+    if args.kmproj:
+        _write_kmproj(result["project_id"], result["name"], repo)
+
+    print(f"\n  project_id: {result['project_id']}")
+    print("\nNext steps:")
+    if repo:
+        print(f"  orch project index {result['project_id']}  # run code+text indexing")
+    else:
+        print(f"  orch project set-repo {result['project_id']} /path/to/repo")
+
+
+def cmd_project_list(args: argparse.Namespace) -> None:
+    projects = _get("/projects/tracking")
+    if not projects:
+        print("No projects found.")
+        return
+    print(f"\n{'NAME':<30} {'STATUS':<16} {'TRACKED':<8} REPO")
+    print("-" * 90)
+    for p in sorted(projects, key=lambda x: x.get("name", "").lower()):
+        name = p.get("name", "?")[:29]
+        status = p.get("embedding_status", "?")[:15]
+        tracked = "yes" if p.get("is_tracked") else "no"
+        repo = p.get("repo_path") or ""
+        print(f"{name:<30} {status:<16} {tracked:<8} {repo}")
+
+
+def cmd_project_info(args: argparse.Namespace) -> None:
+    match = _find_project(args.name_or_id)
+    print()
+    _print_tracking(match)
+
+
+def cmd_project_set_repo(args: argparse.Namespace) -> None:
+    repo = str(Path(args.repo_path).resolve())
+    result = _post(f"/projects/{args.project_id}/tracking", {
+        "repo_path": repo,
+        "is_tracked": True,
+        "embedding_status": "pending",
+        "embedding_enabled": True,
+    })
+    print(f"\nUpdated project {args.project_id}")
+    _print_tracking(result)
+
+    if args.kmproj:
+        _write_kmproj(args.project_id, result.get("name", ""), Path(repo))
+
+
+def cmd_project_index(args: argparse.Namespace) -> None:
+    project = _find_project(args.project)
+    result = _post(f"/projects/{project['project_id']}/tracking/index", {
+        "mode": args.mode,
+        "target": "project",
+        "force_reindex": args.force,
+        "approved": True,
+        "approved_by": "orch-cli",
+    })
+    print(f"\nIndexing job queued for project {project['project_id']}")
+    print(f"  task_id: {result.get('task_id')}")
+    print(f"  mode:    {args.mode}")
+    print("\nCheck progress:")
+    print(f"  orch task list")
+    print(f"  curl http://localhost:8000/memory/embedding-runs?project_id={project['project_id']}")
+
+
+def cmd_project_embedding(args: argparse.Namespace) -> None:
+    project = _find_project(args.project)
+    enabled = args.state == "on"
+    payload = {"embedding_enabled": enabled}
+    if enabled and project.get("is_tracked"):
+        payload["embedding_status"] = "pending"
+    elif not enabled:
+        payload["embedding_status"] = "disabled"
+    result = _post(f"/projects/{project['project_id']}/tracking", payload)
+    print(f"\nProject embeddings {'enabled' if enabled else 'disabled'}")
+    _print_tracking(result)
+
+
+def cmd_project_auto_index(args: argparse.Namespace) -> None:
+    project = _find_project(args.project)
+    enabled = args.state == "on"
+    result = _post(f"/projects/{project['project_id']}/tracking", {"auto_index_enabled": enabled})
+    print(f"\nProject auto-index {'enabled' if enabled else 'disabled'}")
+    _print_tracking(result)
+
+
+def cmd_task_list(args: argparse.Namespace) -> None:
+    tasks = _get(f"/tasks?limit={args.limit or 20}")
+    if not tasks:
+        print("No tasks found.")
+        return
+    limit = args.limit or 20
+    print(f"\n{'ID':<38} {'STATE':<14} {'PRIORITY':<8} PROJECT")
+    print("-" * 90)
+    for t in tasks[:limit]:
+        tid = str(t.get("id") or t.get("task_id") or "")[:36]
+        state = str(t.get("status") or t.get("state") or "?")[:13]
+        priority = str(t.get("priority") or "")
+        project = str(t.get("project_id") or "")
+        print(f"{tid:<38} {state:<14} {priority:<8} {project}")
+
+
+def cmd_task_priority(args: argparse.Namespace) -> None:
+    result = _post(f"/tasks/{args.task_id}/priority", {"priority": args.priority})
+    print(f"Task {result.get('task_id')} priority set to {result.get('priority')}")
+
+
+def cmd_task_cancel(args: argparse.Namespace) -> None:
+    result = _post(
+        f"/tasks/{args.task_id}/cancel",
+        {"reason": args.reason, "cancelled_by": "orch-cli"},
+    )
+    print(f"Task {result.get('task_id')} cancelled")
+
+
+def cmd_control_pause_resume(args: argparse.Namespace) -> None:
+    value = args.action == "pause"
+    key = {
+        "all": "pause_all",
+        "embeddings": "pause_embeddings",
+        "local-models": "pause_local_models",
+    }[args.target]
+    result = _post("/settings/runtime", {key: value})
+    print(json.dumps(result, indent=2))
+
+
+def cmd_control_limits(args: argparse.Namespace) -> None:
+    payload = {
+        "gpu_utilization_limit": args.gpu_util,
+        "gpu_memory_limit_mb": args.vram_mb,
+    }
+    result = _post("/settings/runtime", payload)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_control_cancel_local(args: argparse.Namespace) -> None:
+    result = _post(
+        "/tasks/local/cancel-all",
+        {"reason": args.reason, "cancelled_by": "orch-cli"},
+    )
+    print(f"Cancelled {result.get('count', 0)} local task(s)")
+
+
+def cmd_stats(args: argparse.Namespace) -> None:
+    health = _get("/health")
+    stats = _get("/stats")
+    mem = _get("/memory/stats")
+    print(f"\nOrchestrator: {health.get('status')}  db={health.get('database')}")
+    print(f"Memory items: {mem.get('total', 0)}")
+    if stats:
+        print(f"Tasks:        {json.dumps(stats, indent=2)}")
+
+
+# ── Argument parser ────────────────────────────────────────────────────────────
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="orch",
+        description="AI Orchestrator project management CLI",
+    )
+    parser.add_argument(
+        "-u", "--url",
+        default=None,
+        help="Orchestrator URL (default: $ORCH_URL or http://localhost:8000)",
+    )
+    sub = parser.add_subparsers(dest="resource", metavar="RESOURCE")
+
+    # ── project ──
+    proj = sub.add_parser("project", help="Project management")
+    proj_sub = proj.add_subparsers(dest="action", metavar="ACTION")
+
+    reg = proj_sub.add_parser("register", aliases=["reg", "add"], help="Register a new project")
+    reg.add_argument("path", nargs="?", metavar="PATH", help="Project path (default: current directory)")
+    reg.add_argument("-n", "--name", default=None, help="Project name (default: repo/folder name)")
+    reg.add_argument("-r", "--repo-path", default=None, metavar="PATH",
+                     help="Absolute repo path (legacy alias for PATH)")
+    reg.add_argument("--cwd", action="store_true",
+                     help="Use current working directory as repo path")
+    reg.add_argument("--no-gpu", action="store_true", help="Disable GPU use for this project")
+    reg.add_argument("--no-embeddings", action="store_true", help="Disable embeddings for this project")
+    reg.add_argument("--no-auto-index", action="store_true", help="Do not auto-queue indexing after registration")
+    reg.add_argument("--notes", default=None, help="Optional project notes")
+    reg.add_argument("--no-kmproj", dest="kmproj", action="store_false",
+                     help="Skip writing .kmproj file")
+    reg.set_defaults(kmproj=True)
+
+    lst = proj_sub.add_parser("list", aliases=["ls"], help="List all projects")
+    lst.set_defaults(func=cmd_project_list)
+
+    info = proj_sub.add_parser("info", help="Show project details")
+    info.add_argument("name_or_id", metavar="NAME_OR_ID")
+    info.set_defaults(func=cmd_project_info)
+
+    setr = proj_sub.add_parser("set-repo", help="Set/update repo path for a project")
+    setr.add_argument("project_id", metavar="PROJECT_ID")
+    setr.add_argument("repo_path", metavar="REPO_PATH")
+    setr.add_argument("--no-kmproj", dest="kmproj", action="store_false")
+    setr.set_defaults(kmproj=True, func=cmd_project_set_repo)
+
+    idx = proj_sub.add_parser("index", help="Queue a code+text indexing job")
+    idx.add_argument("project", metavar="PROJECT")
+    idx.add_argument("-m", "--mode", choices=["auto", "code", "text"], default="auto")
+    idx.add_argument("-f", "--force", action="store_true", help="Force reindex unchanged chunks")
+    idx.set_defaults(func=cmd_project_index)
+
+    emb = proj_sub.add_parser("embedding", help="Toggle project embeddings")
+    emb.add_argument("project", metavar="PROJECT")
+    emb.add_argument("state", choices=["on", "off"])
+    emb.set_defaults(func=cmd_project_embedding)
+
+    auto = proj_sub.add_parser("auto-index", help="Toggle project automatic indexing")
+    auto.add_argument("project", metavar="PROJECT")
+    auto.add_argument("state", choices=["on", "off"])
+    auto.set_defaults(func=cmd_project_auto_index)
+
+    # ── task ──
+    task = sub.add_parser("task", help="Task queue inspection")
+    task_sub = task.add_subparsers(dest="action", metavar="ACTION")
+    tlst = task_sub.add_parser("list", aliases=["ls"], help="List recent tasks")
+    tlst.add_argument("-l", "--limit", type=int, default=20)
+    tlst.set_defaults(func=cmd_task_list)
+
+    tpri = task_sub.add_parser("priority", help="Change filesystem task priority")
+    tpri.add_argument("task_id", metavar="TASK_ID")
+    tpri.add_argument("priority", type=int, choices=[1, 2, 3, 4, 5])
+    tpri.set_defaults(func=cmd_task_priority)
+
+    tcan = task_sub.add_parser("cancel", help="Cancel a filesystem task")
+    tcan.add_argument("task_id", metavar="TASK_ID")
+    tcan.add_argument("-r", "--reason", default="Cancelled by orch-cli")
+    tcan.set_defaults(func=cmd_task_cancel)
+
+    # ── control ──
+    control = sub.add_parser("control", help="Runtime pause and resource controls")
+    control_sub = control.add_subparsers(dest="action", metavar="ACTION")
+
+    pause = control_sub.add_parser("pause", help="Pause a runtime target")
+    pause.add_argument("target", choices=["all", "embeddings", "local-models"])
+    pause.set_defaults(func=cmd_control_pause_resume)
+
+    resume = control_sub.add_parser("resume", help="Resume a runtime target")
+    resume.add_argument("target", choices=["all", "embeddings", "local-models"])
+    resume.set_defaults(func=cmd_control_pause_resume)
+
+    limits = control_sub.add_parser("limits", help="Set GPU limits")
+    limits.add_argument("--gpu-util", type=int, default=None, metavar="PCT")
+    limits.add_argument("--vram-mb", type=int, default=None, metavar="MB")
+    limits.set_defaults(func=cmd_control_limits)
+
+    cancel_local = control_sub.add_parser("cancel-local", help="Cancel all local tasks")
+    cancel_local.add_argument("-r", "--reason", default="Cancelled by orch-cli")
+    cancel_local.set_defaults(func=cmd_control_cancel_local)
+
+    # ── stats ──
+    st = sub.add_parser("stats", help="Stack health and memory stats")
+    st.set_defaults(func=cmd_stats)
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.url:
+        global ORCH_URL
+        ORCH_URL = args.url.rstrip("/")
+
+    # Handle --cwd for register
+    if getattr(args, "action", None) in ("register", "reg", "add"):
+        if getattr(args, "cwd", False) and not args.repo_path and not args.path:
+            args.repo_path = str(Path.cwd())
+        args.func = cmd_project_register
+
+    if not hasattr(args, "func") or args.func is None:
+        parser.print_help()
+        sys.exit(0)
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

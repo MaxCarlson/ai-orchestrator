@@ -25,6 +25,10 @@ adding new architecture.
 - [ ] Write `memory/ingest_notes.py` CLI to ingest `memory/notes/` into `text_chunks` via existing `source_ingestion.py`.
 - [ ] Write `memory/promote_candidate.py` CLI to approve `memory/review/*.candidate.md` into `memory_items`.
 
+## P4 - aioc UX Polish
+- [ ] Scroll wheel support in the message viewport (`chat/src/tui.ts` or equivalent input handler).
+- [ ] Arrow key (↑/↓) scrolling when input is empty — currently only PgUp/PgDn work.
+
 ## Validation Commands
 
 ```bash

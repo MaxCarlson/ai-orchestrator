@@ -54,7 +54,7 @@ dropping database tables, mass file writes), describe the action and confirm wit
 
 let _config: ChatConfig = {
   // Local LM Studio is the primary backend. To use Claude: aioc -m claude-sonnet-4-6
-  model: process.env['AI_MODEL'] ?? process.env['ANTHROPIC_MODEL'] ?? 'qwen3-30b-a3b-abliterated',
+  model: process.env['AI_MODEL'] ?? process.env['ANTHROPIC_MODEL'] ?? 'qwen/qwen3-30b-a3b',
   systemPrompt: process.env['CHAT_SYSTEM_PROMPT'] ?? AGENTIC_SYSTEM_PROMPT,
   maxTurns: 20,
   localUrl: defaultLmStudioUrl(),

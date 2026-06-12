@@ -82,28 +82,28 @@ _reranker: "CrossEncoder | None" = None
 
 AVAILABLE_MODELS = [
     {
-        "id": "qwen2.5-coder-32b-instruct-q5km",
-        "label": "Qwen2.5-Coder-32B-Instruct GGUF (Q5_K_M)",
+        "id": "qwen/qwen3-30b-a3b",
+        "label": "Qwen3-30B-A3B Q4_K_M (fits RTX 5090 VRAM)",
         "provider": "local-llm",
         "endpoint": "lmstudio",
         "capabilities": ["code", "analysis", "agentic"],
         "runtime": "local",
-        "lmstudio_model": "qwen2.5-coder-32b-instruct",
-        "lmstudio_identifier": "qwen2.5-coder-32b-q5km",
-        "recommended_quant": "Q5_K_M",
+        "lmstudio_model": "qwen/qwen3-30b-a3b",
+        "lmstudio_identifier": "qwen/qwen3-30b-a3b",
+        "recommended_quant": "Q4_K_M",
         "gpu": "max",
         "context_length": 32768,
     },
     {
-        "id": "qwen2.5-coder-32b-instruct-q6k",
-        "label": "Qwen2.5-Coder-32B-Instruct GGUF (Q6_K)",
+        "id": "qwen/qwen3-coder-next",
+        "label": "Qwen3-Coder-Next 80B Q4_K_M (exceeds VRAM — slow first token)",
         "provider": "local-llm",
         "endpoint": "lmstudio",
         "capabilities": ["code", "analysis", "agentic"],
         "runtime": "local",
-        "lmstudio_model": "qwen2.5-coder-32b-instruct",
-        "lmstudio_identifier": "qwen2.5-coder-32b-q6k",
-        "recommended_quant": "Q6_K",
+        "lmstudio_model": "qwen/qwen3-coder-next",
+        "lmstudio_identifier": "qwen/qwen3-coder-next",
+        "recommended_quant": "Q4_K_M",
         "gpu": "max",
         "context_length": 32768,
     },
@@ -140,6 +140,7 @@ AVAILABLE_MODELS = [
 
 TRACKING_STATUSES = {
     "not_tracked",
+    "disabled",
     "pending",
     "indexing",
     "ready",
@@ -151,6 +152,33 @@ CODE_CONTEXT_MAX_CHARS = 8000
 CODE_CONTEXT_SNIPPET_CHARS = 1200
 GLOBAL_TASK_PROJECT_ID = "00000000-0000-0000-0000-000000000000"
 GLOBAL_RAG_PROJECT_NAME = "__global_rag__"
+RUNTIME_SETTINGS_KEY = "runtime_controls"
+MODEL_SET_KEY = "model_set"
+EMBEDDING_JOB_TYPES = {
+    "index_repo",
+    "index_global_repo",
+    "reindex_repo",
+    "code_index",
+    "text_index",
+    "global_embedding",
+}
+DEFAULT_RUNTIME_SETTINGS = {
+    "pause_all": False,
+    "pause_local_models": False,
+    "pause_embeddings": False,
+    "auto_index_enabled": True,
+    "gpu_utilization_limit": None,
+    "gpu_memory_limit_mb": None,
+}
+DEFAULT_MODEL_SET = {
+    "chat": "qwen/qwen3-30b-a3b",
+    "coding": "qwen/qwen3-30b-a3b",
+    "research": "qwen/qwen3-30b-a3b",
+    "text_embedding": "BAAI/bge-base-en-v1.5",
+    "code_embedding": "microsoft/codebert-base",
+    "reranker": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "summarizer": "qwen/qwen3-30b-a3b",
+}
 
 
 def _worker_db_target(cli_preference: str) -> tuple[str, int]:
@@ -218,8 +246,11 @@ async def ensure_project_tracking_schema(conn: asyncpg.Connection) -> None:
             global_text_model_id TEXT,
             embedding_stats JSONB,
             global_embedding_stats JSONB,
-            gpu_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            gpu_enabled BOOLEAN NOT NULL DEFAULT TRUE,
             gpu_device TEXT,
+            embedding_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            auto_index_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            resource_profile_id TEXT,
             notes TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -255,6 +286,15 @@ async def ensure_project_tracking_schema(conn: asyncpg.Connection) -> None:
     )
     await conn.execute(
         "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS global_embedding_stats JSONB;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS embedding_enabled BOOLEAN NOT NULL DEFAULT TRUE;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS auto_index_enabled BOOLEAN NOT NULL DEFAULT TRUE;"
+    )
+    await conn.execute(
+        "ALTER TABLE project_tracking ADD COLUMN IF NOT EXISTS resource_profile_id TEXT;"
     )
 
 
@@ -325,6 +365,47 @@ async def get_current_model_id(conn: asyncpg.Connection) -> str:
     return AVAILABLE_MODELS[0]["id"]
 
 
+def _merge_runtime_settings(value: Optional[dict]) -> dict:
+    """Return runtime controls with defaults and normalized numeric limits."""
+    merged = {**DEFAULT_RUNTIME_SETTINGS, **(value or {})}
+    for key in ("gpu_utilization_limit", "gpu_memory_limit_mb"):
+        if merged.get(key) in ("", 0):
+            merged[key] = None
+    return merged
+
+
+async def get_runtime_settings(conn: asyncpg.Connection) -> dict:
+    """Fetch persisted runtime controls."""
+    value = await get_orchestrator_setting(conn, RUNTIME_SETTINGS_KEY, DEFAULT_RUNTIME_SETTINGS)
+    return _merge_runtime_settings(value)
+
+
+async def set_runtime_settings(conn: asyncpg.Connection, updates: dict) -> dict:
+    """Merge and persist runtime controls."""
+    current = await get_runtime_settings(conn)
+    allowed = set(DEFAULT_RUNTIME_SETTINGS)
+    clean_updates = {key: value for key, value in updates.items() if key in allowed}
+    merged = _merge_runtime_settings({**current, **clean_updates})
+    await set_orchestrator_setting(conn, RUNTIME_SETTINGS_KEY, merged)
+    return merged
+
+
+async def get_model_set(conn: asyncpg.Connection) -> dict:
+    """Fetch model role assignments."""
+    value = await get_orchestrator_setting(conn, MODEL_SET_KEY, DEFAULT_MODEL_SET)
+    return {**DEFAULT_MODEL_SET, **(value or {})}
+
+
+async def set_model_set(conn: asyncpg.Connection, updates: dict) -> dict:
+    """Merge and persist model role assignments."""
+    current = await get_model_set(conn)
+    allowed = set(DEFAULT_MODEL_SET)
+    clean_updates = {key: value for key, value in updates.items() if key in allowed and value}
+    merged = {**current, **clean_updates}
+    await set_orchestrator_setting(conn, MODEL_SET_KEY, merged)
+    return merged
+
+
 async def bootstrap_memory_and_settings() -> None:
     """Initialise memory schema and orchestrator settings."""
     pool = await get_db_pool()
@@ -341,6 +422,10 @@ async def bootstrap_memory_and_settings() -> None:
                 "current_model",
                 {"model_id": AVAILABLE_MODELS[0]["id"]},
             )
+        if not await get_orchestrator_setting(conn, RUNTIME_SETTINGS_KEY):
+            await set_orchestrator_setting(conn, RUNTIME_SETTINGS_KEY, DEFAULT_RUNTIME_SETTINGS)
+        if not await get_orchestrator_setting(conn, MODEL_SET_KEY):
+            await set_orchestrator_setting(conn, MODEL_SET_KEY, DEFAULT_MODEL_SET)
     async with pool.acquire() as conn:
         await register_model(conn, model_id="BAAI/bge-base-en-v1.5", purpose="text", dimensions=768, framework="sentence-transformers", is_default=True)
         await register_model(conn, model_id="microsoft/codebert-base", purpose="code", dimensions=768, framework="sentence-transformers", is_default=True)
@@ -456,8 +541,11 @@ def normalise_tracking_record(project_id: str, row: Optional[asyncpg.Record]) ->
         "global_text_model_id": None,
         "embedding_stats": None,
         "global_embedding_stats": None,
-        "gpu_enabled": False,
+        "gpu_enabled": True,
         "gpu_device": None,
+        "embedding_enabled": True,
+        "auto_index_enabled": True,
+        "resource_profile_id": None,
         "notes": None,
     }
     if row:
@@ -497,6 +585,9 @@ async def fetch_project_tracking(conn: asyncpg.Connection, project_id: str) -> d
             global_embedding_stats,
             gpu_enabled,
             gpu_device,
+            embedding_enabled,
+            auto_index_enabled,
+            resource_profile_id,
             notes
         FROM project_tracking
         WHERE project_id = $1
@@ -521,6 +612,16 @@ def normalize_embedding_model_id(model_id: Optional[str]) -> Optional[str]:
         return None
     value = model_id.strip()
     return value or None
+
+
+def derive_project_name(repo_path: Optional[str], explicit_name: Optional[str]) -> str:
+    """Derive a stable project name from caller input."""
+    if explicit_name and explicit_name.strip():
+        return explicit_name.strip()
+    if repo_path and repo_path.strip():
+        path = Path(repo_path).expanduser()
+        return path.name or path.resolve(strict=False).name or "untitled-project"
+    raise HTTPException(status_code=400, detail="Project name is required when repo_path is omitted")
 
 
 async def ensure_project_exists(conn: asyncpg.Connection, project_id: str) -> None:
@@ -606,7 +707,19 @@ async def upsert_project_tracking(
         data.gpu_enabled if data.gpu_enabled is not None else current["gpu_enabled"]
     )
     gpu_device = data.gpu_device if data.gpu_device is not None else current["gpu_device"]
+    embedding_enabled = (
+        data.embedding_enabled if data.embedding_enabled is not None else current["embedding_enabled"]
+    )
+    auto_index_enabled = (
+        data.auto_index_enabled if data.auto_index_enabled is not None else current["auto_index_enabled"]
+    )
+    resource_profile_id = (
+        data.resource_profile_id if data.resource_profile_id is not None else current["resource_profile_id"]
+    )
     notes = data.notes if data.notes is not None else current["notes"]
+
+    if is_tracked and not embedding_enabled:
+        embedding_status = "disabled"
 
     await conn.execute(
         """
@@ -630,6 +743,9 @@ async def upsert_project_tracking(
             global_embedding_stats,
             gpu_enabled,
             gpu_device,
+            embedding_enabled,
+            auto_index_enabled,
+            resource_profile_id,
             notes,
             updated_at
         ) VALUES (
@@ -653,6 +769,9 @@ async def upsert_project_tracking(
             $18,
             $19,
             $20,
+            $21,
+            $22,
+            $23,
             NOW()
         )
         ON CONFLICT (project_id)
@@ -681,6 +800,9 @@ async def upsert_project_tracking(
             global_embedding_stats = EXCLUDED.global_embedding_stats,
             gpu_enabled = EXCLUDED.gpu_enabled,
             gpu_device = EXCLUDED.gpu_device,
+            embedding_enabled = EXCLUDED.embedding_enabled,
+            auto_index_enabled = EXCLUDED.auto_index_enabled,
+            resource_profile_id = EXCLUDED.resource_profile_id,
             notes = EXCLUDED.notes,
             updated_at = NOW()
         """,
@@ -703,6 +825,9 @@ async def upsert_project_tracking(
         global_embedding_stats,
         gpu_enabled,
         gpu_device,
+        embedding_enabled,
+        auto_index_enabled,
+        resource_profile_id,
         notes,
     )
 
@@ -744,6 +869,66 @@ import subprocess
 
 
 # Task processing
+def _task_job_type(task_data: dict) -> Optional[str]:
+    return ((task_data.get("context") or {}).get("job_type") or "").strip() or None
+
+
+def _is_embedding_task(task_data: dict) -> bool:
+    return _task_job_type(task_data) in EMBEDDING_JOB_TYPES
+
+
+def _has_active_embedding_job(task_queue: TaskQueue) -> bool:
+    for status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+        for task in task_queue.list_tasks(status):
+            if task.get("cli_preference") == "local" and _is_embedding_task(task):
+                return True
+    return False
+
+
+def _defer_reason(task_data: dict, runtime_settings: dict, active_embedding_job: bool) -> Optional[str]:
+    if runtime_settings.get("pause_all"):
+        return "all task assignment is paused"
+    if task_data.get("cli_preference") == "local" and runtime_settings.get("pause_local_models"):
+        return "local model tasks are paused"
+    if _is_embedding_task(task_data):
+        if runtime_settings.get("pause_embeddings"):
+            return "embedding tasks are paused"
+        if active_embedding_job:
+            return "another embedding task is already active"
+    return None
+
+
+def _promote_queued_embedding_tasks(project_id: str) -> int:
+    """Raise queued embedding work for a project to highest priority."""
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    promoted = 0
+    for task in task_queue.list_tasks(TaskStatus.QUEUED):
+        if task.get("project_id") != project_id or not _is_embedding_task(task):
+            continue
+        if int(task.get("priority", TaskPriority.NORMAL)) >= TaskPriority.HIGHEST:
+            continue
+        task_queue.update_priority(task["task_id"], TaskPriority.HIGHEST)
+        promoted += 1
+    return promoted
+
+
+async def _promote_embeddings_if_project_requested(project_id: str) -> None:
+    """Promote queued indexing when a project is actively queried before readiness."""
+    try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            tracking = await fetch_project_tracking(conn, project_id)
+        if (
+            tracking.get("embedding_enabled", True)
+            and tracking.get("embedding_status") in {"pending", "stale", "not_tracked", "error"}
+        ):
+            promoted = _promote_queued_embedding_tasks(project_id)
+            if promoted:
+                logger.info("Promoted %s queued embedding task(s) for requested project %s", promoted, project_id)
+    except Exception:
+        logger.debug("Unable to promote embedding task for requested project %s", project_id, exc_info=True)
+
+
 async def process_pending_tasks():
     """Poll task queue filesystem and dispatch to CLI workers"""
     task_queue = TaskQueue(queue_path=settings.task_queue_path)
@@ -768,9 +953,14 @@ async def process_pending_tasks():
 
     while True:
         try:
+            pool = await get_db_pool()
+            async with pool.acquire() as conn:
+                runtime_settings = await get_runtime_settings(conn)
+
             # Get queued tasks
             queued_tasks = task_queue.list_tasks(TaskStatus.QUEUED, limit=10)
             project_locks = get_project_cli_locks()
+            active_embedding_job = _has_active_embedding_job(task_queue)
 
             if queued_tasks:
                 logger.info(f"Found {len(queued_tasks)} queued tasks")
@@ -798,6 +988,11 @@ async def process_pending_tasks():
                         )
                         continue
 
+                    defer_reason = _defer_reason(task_data, runtime_settings, active_embedding_job)
+                    if defer_reason:
+                        logger.info("Deferring task %s: %s", task_id[:8], defer_reason)
+                        continue
+
                     if project_id and project_locks.get(project_id):
                         cli_preference = project_locks[project_id]
                     elif project_id and cli_preference:
@@ -820,6 +1015,8 @@ async def process_pending_tasks():
                     )
 
                     if success:
+                        if cli_preference == "local" and _is_embedding_task(task_data):
+                            active_embedding_job = True
                         # Spawn CLI worker (background process)
                         await spawn_cli_worker(task_queue, task_data, cli_preference)
                     else:
@@ -989,6 +1186,8 @@ class TextIndexRequest(BaseModel):
     target: str = "project"
     force_reindex: bool = False
     include_pdfs: bool = True
+    approved: bool = False
+    approved_by: Optional[str] = None
 
 
 class IngestTextRequest(BaseModel):
@@ -1025,8 +1224,50 @@ class ManualTaskCreate(BaseModel):
     approved_by: Optional[str] = None
 
 
+class RuntimeSettingsUpdate(BaseModel):
+    pause_all: Optional[bool] = None
+    pause_local_models: Optional[bool] = None
+    pause_embeddings: Optional[bool] = None
+    auto_index_enabled: Optional[bool] = None
+    gpu_utilization_limit: Optional[int] = Field(default=None, ge=1, le=100)
+    gpu_memory_limit_mb: Optional[int] = Field(default=None, ge=1)
+
+
+class TaskPriorityUpdate(BaseModel):
+    priority: int = Field(ge=1, le=5)
+
+
+class TaskCancelRequest(BaseModel):
+    reason: str = "Cancelled by operator"
+    cancelled_by: str = "operator"
+
+
+class ModelSetUpdate(BaseModel):
+    chat: Optional[str] = None
+    coding: Optional[str] = None
+    research: Optional[str] = None
+    text_embedding: Optional[str] = None
+    code_embedding: Optional[str] = None
+    reranker: Optional[str] = None
+    summarizer: Optional[str] = None
+
+
 class ModelSelectionRequest(BaseModel):
     model_id: str
+
+
+class ProjectCreate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    repo_path: Optional[str] = None
+    gpu_enabled: bool = True
+    gpu_device: Optional[str] = None
+    embedding_enabled: bool = True
+    auto_index_enabled: bool = True
+    resource_profile_id: Optional[str] = None
+    notes: Optional[str] = None
+    approved: bool = False
+    approved_by: Optional[str] = None
 
 
 class ProjectTrackingUpdate(BaseModel):
@@ -1047,6 +1288,9 @@ class ProjectTrackingUpdate(BaseModel):
     global_embedding_stats: Optional[dict] = None
     gpu_enabled: Optional[bool] = None
     gpu_device: Optional[str] = None
+    embedding_enabled: Optional[bool] = None
+    auto_index_enabled: Optional[bool] = None
+    resource_profile_id: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -1084,6 +1328,122 @@ def _require_explicit_approval(approved: bool, approved_by: Optional[str], actio
             ),
         )
     return {"approved": True, "approved_by": approver}
+
+
+async def _queue_embedding_job(project_id: str, payload: EmbeddingJobRequest, approval: dict) -> dict:
+    """Create a filesystem task for project/global embedding work."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await ensure_project_exists(conn, project_id)
+        tracking = await fetch_project_tracking(conn, project_id)
+        project = await conn.fetchrow(
+            "SELECT name FROM projects WHERE id = $1",
+            project_id,
+        )
+
+    if not tracking.get("embedding_enabled", True):
+        raise HTTPException(status_code=400, detail="Project embeddings are disabled")
+
+    repo_paths = tracking.get("repo_paths") or []
+    if tracking.get("repo_path") and not repo_paths:
+        repo_paths = [tracking["repo_path"]]
+
+    if not tracking["is_tracked"] or not repo_paths:
+        raise HTTPException(
+            status_code=400,
+            detail="Project must be tracked with a repository path before indexing",
+        )
+
+    code_model_id = (
+        normalize_embedding_model_id(payload.code_model_id)
+        or tracking.get("embedding_model_id")
+        or DEFAULT_MODEL_SET["code_embedding"]
+    )
+    text_model_id = (
+        normalize_embedding_model_id(payload.text_model_id)
+        or tracking.get("text_embedding_model_id")
+        or DEFAULT_MODEL_SET["text_embedding"]
+    )
+
+    status_payload = ProjectTrackingUpdate()
+    if payload.target in {"project", "both"}:
+        status_payload.embedding_status = "indexing"
+        status_payload.embedding_model_id = code_model_id
+        status_payload.text_embedding_model_id = text_model_id
+        status_payload.embedding_mode = payload.mode
+    if payload.target in {"global", "both"}:
+        status_payload.global_embedding_status = "indexing"
+        status_payload.global_code_model_id = code_model_id
+        status_payload.global_text_model_id = text_model_id
+        status_payload.global_embedding_mode = payload.mode
+    if status_payload.model_dump(exclude_none=True):
+        async with pool.acquire() as conn:
+            await upsert_project_tracking(conn, project_id, status_payload)
+
+    project_name = project["name"] if project else project_id
+    repo_path = repo_paths[0]
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    db_host, db_port = _worker_db_target("local")
+    embeddings_script = Path(settings.host_repo_root) / "memory" / "run_embeddings.py"
+    base_command = (
+        f"python \"{embeddings_script}\""
+        f" --project-id {project_id}"
+        f" --mode {payload.mode}"
+        f" --target {payload.target}"
+        f" --code-model \"{code_model_id}\""
+        f" --text-model \"{text_model_id}\""
+        f" --db-host \"{db_host}\""
+        f" --db-port {db_port}"
+        f" --db-name \"{settings.postgres_db}\""
+        f" --db-user \"{settings.postgres_user}\""
+        f" --db-password \"{settings.postgres_password}\""
+    )
+    if payload.force_reindex:
+        base_command += " --force-reindex"
+
+    commands = "\n".join(f"{base_command} --repo-path \"{path}\"" for path in repo_paths)
+    repo_paths_display = "\n".join(f"- {path}" for path in repo_paths)
+    description = (
+        "Run repository embedding for the selected project.\n"
+        f"Project: {project_name} ({project_id})\n"
+        f"Repository paths:\n{repo_paths_display}\n"
+        f"Mode: {payload.mode}\n"
+        f"Target: {payload.target}\n"
+        "Command hint:\n"
+        f"{commands}"
+    )
+    context = {
+        "job_type": "index_repo",
+        "mode": payload.mode,
+        "target": payload.target,
+        "repo_path": repo_path,
+        "repo_paths": repo_paths,
+        "code_model_id": code_model_id,
+        "text_model_id": text_model_id,
+        "force_reindex": payload.force_reindex,
+        "command": "set -e\n" + commands,
+        "approval": approval,
+    }
+
+    task_id = task_queue.create_task(
+        project_id=project_id,
+        task_title=f"Embed repository - {project_name}",
+        description=description,
+        priority=TaskPriority.HIGH,
+        cli_preference="local",
+        working_dir=settings.host_repo_root,
+        context=context,
+    )
+
+    return {
+        "status": "queued",
+        "task_id": task_id,
+        "priority": int(TaskPriority.HIGH),
+        "mode": payload.mode,
+        "target": payload.target,
+        "repo_paths": repo_paths,
+        "embedding_status": "indexing" if payload.target in {"project", "both"} else tracking["embedding_status"],
+    }
 
 
 # API Endpoints
@@ -1138,7 +1498,7 @@ async def queue_manual_task(payload: ManualTaskCreate):
         payload.approved_by,
         action="manual task queueing",
     )
-    task_queue = TaskQueue()
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
     try:
         task_id = task_queue.create_task(
             project_id=payload.project_id,
@@ -1154,6 +1514,74 @@ async def queue_manual_task(payload: ManualTaskCreate):
         raise HTTPException(status_code=500, detail=f"Unable to queue task: {exc}") from exc
 
     return {"task_id": task_id}
+
+
+@app.post("/tasks/{task_id}/priority")
+async def update_task_priority(task_id: str, payload: TaskPriorityUpdate):
+    """Update queued/assigned/in-progress filesystem task priority."""
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    updated = task_queue.update_priority(task_id, payload.priority)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"status": "updated", "task_id": task_id, "priority": updated.get("priority")}
+
+
+@app.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str, payload: TaskCancelRequest):
+    """Cancel a filesystem queue task."""
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    cancelled = task_queue.cancel_task(
+        task_id,
+        reason=payload.reason,
+        cancelled_by=payload.cancelled_by,
+    )
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Task not found or already finished")
+    return {"status": "cancelled", "task_id": task_id}
+
+
+@app.post("/tasks/local/cancel-all")
+async def cancel_all_local_tasks(payload: TaskCancelRequest):
+    """Cancel queued/assigned/in-progress local high-resource jobs."""
+    task_queue = TaskQueue(queue_path=settings.task_queue_path)
+    cancelled = task_queue.cancel_matching(
+        cli_preference="local",
+        reason=payload.reason,
+        cancelled_by=payload.cancelled_by,
+    )
+    return {"status": "cancelled", "count": len(cancelled), "task_ids": [task["task_id"] for task in cancelled]}
+
+
+@app.get("/settings/runtime")
+async def read_runtime_settings():
+    """Return runtime pause and resource-limit controls."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        return await get_runtime_settings(conn)
+
+
+@app.post("/settings/runtime")
+async def update_runtime_settings(payload: RuntimeSettingsUpdate):
+    """Update runtime pause and resource-limit controls."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        return await set_runtime_settings(conn, payload.model_dump(exclude_unset=True))
+
+
+@app.get("/config/model-set")
+async def read_model_set():
+    """Return role-based model assignments."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        return {"roles": await get_model_set(conn), "defaults": DEFAULT_MODEL_SET}
+
+
+@app.post("/config/model-set")
+async def update_model_set(payload: ModelSetUpdate):
+    """Update role-based model assignments."""
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        return {"roles": await set_model_set(conn, payload.model_dump(exclude_unset=True))}
 
 
 @app.get("/config/models")
@@ -1210,6 +1638,9 @@ async def list_project_tracking():
                 pt.global_embedding_stats,
                 COALESCE(pt.gpu_enabled, FALSE) AS gpu_enabled,
                 pt.gpu_device,
+                COALESCE(pt.embedding_enabled, TRUE) AS embedding_enabled,
+                COALESCE(pt.auto_index_enabled, TRUE) AS auto_index_enabled,
+                pt.resource_profile_id,
                 pt.notes
             FROM projects p
             LEFT JOIN project_tracking pt ON pt.project_id = p.id
@@ -1232,6 +1663,69 @@ async def list_project_tracking():
             data["repo_path"] = paths[0]
         results.append(data)
     return results
+
+
+@app.post("/projects")
+async def create_project(payload: ProjectCreate):
+    """Create a new project and optionally set its repo path and tracking metadata."""
+    project_name = derive_project_name(payload.repo_path, payload.name)
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        # Insert into km's projects table
+        project_id = await conn.fetchval(
+            """
+            INSERT INTO projects (name, description_md_path, status)
+            VALUES ($1, $2, 'active')
+            RETURNING id
+            """,
+            project_name,
+            payload.description,
+        )
+        project_id = str(project_id)
+
+        # Set up tracking row if any tracking info provided
+        tracking_payload = ProjectTrackingUpdate(
+            repo_path=payload.repo_path,
+            is_tracked=payload.repo_path is not None,
+            gpu_enabled=payload.gpu_enabled,
+            gpu_device=payload.gpu_device,
+            embedding_enabled=payload.embedding_enabled,
+            auto_index_enabled=payload.auto_index_enabled,
+            resource_profile_id=payload.resource_profile_id,
+            notes=payload.notes,
+            embedding_status=(
+                "pending"
+                if payload.repo_path and payload.embedding_enabled
+                else "disabled"
+                if payload.repo_path
+                else "not_tracked"
+            ),
+        )
+        tracking = await upsert_project_tracking(conn, project_id, tracking_payload)
+
+    auto_index = None
+    if payload.repo_path and payload.embedding_enabled and payload.auto_index_enabled:
+        try:
+            approval = _require_explicit_approval(
+                payload.approved,
+                payload.approved_by,
+                action="project auto embedding",
+            )
+            auto_index = await _queue_embedding_job(
+                project_id,
+                EmbeddingJobRequest(approved=True, approved_by=approval["approved_by"]),
+                approval,
+            )
+        except HTTPException as exc:
+            auto_index = {
+                "status": "not_queued",
+                "reason": exc.detail,
+            }
+
+    async with pool.acquire() as conn:
+        tracking = await fetch_project_tracking(conn, project_id)
+
+    return {"project_id": project_id, "id": project_id, "name": project_name, **tracking, "auto_index": auto_index}
 
 
 @app.get("/projects/{project_id}/tracking")
@@ -1266,117 +1760,7 @@ async def queue_embedding_job(project_id: str, payload: EmbeddingJobRequest):
         payload.approved_by,
         action="project embedding",
     )
-    pool = await get_db_pool()
-    async with pool.acquire() as conn:
-        await ensure_project_exists(conn, project_id)
-        tracking = await fetch_project_tracking(conn, project_id)
-        project = await conn.fetchrow(
-            "SELECT name FROM projects WHERE id = $1",
-            project_id,
-        )
-
-        repo_paths = tracking.get("repo_paths") or []
-        if tracking.get("repo_path") and not repo_paths:
-            repo_paths = [tracking["repo_path"]]
-
-        if not tracking["is_tracked"] or not repo_paths:
-            raise HTTPException(
-                status_code=400,
-                detail="Project must be tracked with a repository path before indexing",
-            )
-
-    code_model_id = (
-        normalize_embedding_model_id(payload.code_model_id)
-        or tracking.get("embedding_model_id")
-        or "microsoft/codebert-base"
-    )
-    text_model_id = (
-        normalize_embedding_model_id(payload.text_model_id)
-        or tracking.get("text_embedding_model_id")
-        or "BAAI/bge-base-en-v1.5"
-    )
-
-    status_payload = ProjectTrackingUpdate()
-    if payload.target in {"project", "both"}:
-        status_payload.embedding_status = "indexing"
-        status_payload.embedding_model_id = code_model_id
-        status_payload.text_embedding_model_id = text_model_id
-        status_payload.embedding_mode = payload.mode
-    if payload.target in {"global", "both"}:
-        status_payload.global_embedding_status = "indexing"
-        status_payload.global_code_model_id = code_model_id
-        status_payload.global_text_model_id = text_model_id
-        status_payload.global_embedding_mode = payload.mode
-    if status_payload.model_dump(exclude_none=True):
-        await upsert_project_tracking(conn, project_id, status_payload)
-
-        project_name = project["name"]
-        repo_path = repo_paths[0]
-
-    task_queue = TaskQueue(queue_path=settings.task_queue_path)
-    db_host, db_port = _worker_db_target("local")
-    embeddings_script = Path(settings.host_repo_root) / "memory" / "run_embeddings.py"
-    base_command = (
-        f"python \"{embeddings_script}\""
-        f" --project-id {project_id}"
-        f" --mode {payload.mode}"
-        f" --target {payload.target}"
-        f" --code-model \"{code_model_id}\""
-        f" --text-model \"{text_model_id}\""
-        f" --db-host \"{db_host}\""
-        f" --db-port {db_port}"
-        f" --db-name \"{settings.postgres_db}\""
-        f" --db-user \"{settings.postgres_user}\""
-        f" --db-password \"{settings.postgres_password}\""
-    )
-    if payload.force_reindex:
-        base_command += " --force-reindex"
-
-    commands = "\n".join(
-        f"{base_command} --repo-path \"{path}\""
-        for path in repo_paths
-    )
-    repo_paths_display = "\n".join(f"- {path}" for path in repo_paths)
-    description = (
-        "Run repository embedding for the selected project.\n"
-        f"Project: {project_name} ({project_id})\n"
-        f"Repository paths:\n{repo_paths_display}\n"
-        f"Mode: {payload.mode}\n"
-        f"Target: {payload.target}\n"
-        "Command hint:\n"
-        f"{commands}"
-    )
-    context = {
-        "job_type": "index_repo",
-        "mode": payload.mode,
-        "target": payload.target,
-        "repo_path": repo_path,
-        "repo_paths": repo_paths,
-        "code_model_id": code_model_id,
-        "text_model_id": text_model_id,
-        "force_reindex": payload.force_reindex,
-        "command": "set -e\n" + "\n".join(
-            f"{base_command} --repo-path \"{path}\""
-            for path in repo_paths
-        ),
-        "approval": approval,
-    }
-
-    task_id = task_queue.create_task(
-        project_id=project_id,
-        task_title=f"Embed repository - {project_name}",
-        description=description,
-        priority=TaskPriority.HIGH,
-        cli_preference="local",
-        working_dir=settings.host_repo_root,
-        context=context,
-    )
-
-    return {
-        "status": "queued",
-        "task_id": task_id,
-        "embedding_status": "indexing" if payload.target in {"project", "both"} else tracking["embedding_status"],
-    }
+    return await _queue_embedding_job(project_id, payload, approval)
 
 
 @app.post("/memory/global/index")
@@ -1948,6 +2332,7 @@ async def search_memory(payload: MemorySearchRequest):
 @app.post("/memory/code-search/{project_id}")
 async def code_search_endpoint(project_id: str, payload: CodeSearchRequest):
     """Vector-only search across indexed code chunks."""
+    await _promote_embeddings_if_project_requested(project_id)
     pool = await get_db_pool()
     embedder = get_code_embedder()
     query_embedding = embedder.embed_query(payload.query)
@@ -2021,6 +2406,7 @@ async def code_index_endpoint(project_id: str, payload: CodeIndexRequest):
 @app.post("/memory/text-search/{project_id}")
 async def text_search_endpoint(project_id: str, req: TextSearchRequest) -> dict:
     """Search text chunks for a project using hybrid retrieval."""
+    await _promote_embeddings_if_project_requested(project_id)
     embedder = get_text_embedder()
     query_embedding = embedder.embed_query(req.query)
     table = req.table if req.table in {"text_chunks", "global_text_chunks"} else "text_chunks"
@@ -2063,6 +2449,11 @@ async def text_search_endpoint(project_id: str, req: TextSearchRequest) -> dict:
 @app.post("/memory/text-index/{project_id}")
 async def text_index_endpoint(project_id: str, req: TextIndexRequest) -> dict:
     """Queue a text indexing job for a project."""
+    approval = _require_explicit_approval(
+        req.approved,
+        req.approved_by,
+        action="project text indexing",
+    )
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await ensure_project_exists(conn, project_id)
@@ -2112,6 +2503,7 @@ async def text_index_endpoint(project_id: str, req: TextIndexRequest) -> dict:
         "force_reindex": req.force_reindex,
         "include_pdfs": req.include_pdfs,
         "command": command,
+        "approval": approval,
     }
 
     task_queue = TaskQueue(queue_path=settings.task_queue_path)

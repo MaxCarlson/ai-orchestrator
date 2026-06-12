@@ -466,6 +466,99 @@ class TaskQueue:
 
         return tasks
 
+    def update_priority(self, task_id: str, priority: int) -> Optional[Dict[str, Any]]:
+        """
+        Update a task priority in whichever state currently contains it.
+
+        Args:
+            task_id: Task UUID
+            priority: New priority value, 1-5
+
+        Returns:
+            Updated task data, or None if task was not found.
+        """
+        if priority < TaskPriority.LOWEST or priority > TaskPriority.HIGHEST:
+            raise ValueError("priority must be between 1 and 5")
+
+        for status in TaskStatus:
+            try:
+                task_data = self._read_task(task_id, status)
+            except TaskNotFoundError:
+                continue
+            task_data["priority"] = int(priority)
+            task_data["priority_updated_at"] = datetime.utcnow().isoformat() + "Z"
+            self._write_task(task_id, status, task_data)
+            return task_data
+        return None
+
+    def cancel_task(
+        self,
+        task_id: str,
+        reason: str = "Cancelled by operator",
+        cancelled_by: str = "operator",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Mark a task as cancelled by moving it to failed/.
+
+        The filesystem queue has no cancelled state, so cancellation is encoded
+        as a failed task with error.type = "Cancelled".
+        """
+        for status in (TaskStatus.QUEUED, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+            try:
+                task_data = self._read_task(task_id, status)
+            except TaskNotFoundError:
+                continue
+
+            task_data.update(
+                {
+                    "status": TaskStatus.FAILED.value,
+                    "failed_at": datetime.utcnow().isoformat() + "Z",
+                    "exit_code": 130,
+                    "error": {
+                        "type": "Cancelled",
+                        "message": reason,
+                        "cancelled_by": cancelled_by,
+                    },
+                }
+            )
+
+            source = self._get_task_path(task_id, status)
+            dest = self._get_task_path(task_id, TaskStatus.FAILED)
+            temp_file = dest.with_suffix(".tmp")
+            with open(temp_file, "w") as f:
+                json.dump(task_data, f, indent=2)
+            os.rename(temp_file, dest)
+            os.unlink(source)
+            return task_data
+        return None
+
+    def cancel_matching(
+        self,
+        *,
+        cli_preference: Optional[str] = None,
+        job_types: Optional[set[str]] = None,
+        reason: str = "Cancelled by operator",
+        cancelled_by: str = "operator",
+    ) -> List[Dict[str, Any]]:
+        """Cancel all active or queued tasks matching the given filters."""
+        cancelled = []
+        for status in (TaskStatus.QUEUED, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+            for task in list(self.list_tasks(status)):
+                if cli_preference and task.get("cli_preference") != cli_preference:
+                    continue
+                if job_types is not None:
+                    job_type = (task.get("context") or {}).get("job_type")
+                    if job_type not in job_types:
+                        continue
+                cancelled_task = self.cancel_task(
+                    task["task_id"],
+                    reason=reason,
+                    cancelled_by=cancelled_by,
+                )
+                if cancelled_task:
+                    cancelled.append(cancelled_task)
+        return cancelled
+
     def get_queue_stats(self) -> Dict[str, int]:
         """
         Get task counts for each status.
