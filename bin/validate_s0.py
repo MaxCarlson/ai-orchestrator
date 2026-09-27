@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -52,6 +53,33 @@ def run_command(argv: list[str], *, timeout: int, env: dict[str, str] | None = N
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="replace")
         return {"argv": safe_argv, "exit_code": None, "elapsed_seconds": round(time.monotonic() - started, 3), "log": redact(f"{type(exc).__name__}: {exc}\n{output}", (secret,))}
+
+
+def run_command_with_heartbeat(
+    argv: list[str],
+    *,
+    timeout: int,
+    label: str,
+    env: dict[str, str] | None = None,
+    secret: str = "",
+    interval: float = 5,
+) -> dict[str, Any]:
+    """Run a bounded command while periodically showing that it is still active."""
+    started = time.monotonic()
+    stopped = threading.Event()
+
+    def emit_heartbeat() -> None:
+        while not stopped.wait(interval):
+            elapsed = int(time.monotonic() - started)
+            print(f"[s0] {label} still running (elapsed: {elapsed}s)...", file=sys.stderr, flush=True)
+
+    heartbeat = threading.Thread(target=emit_heartbeat, daemon=True)
+    heartbeat.start()
+    try:
+        return run_command(argv, timeout=timeout, env=env, secret=secret)
+    finally:
+        stopped.set()
+        heartbeat.join()
 
 
 def result(status: str, detail: str, **evidence: Any) -> dict[str, Any]:
@@ -235,7 +263,13 @@ def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: st
                 return {name: result("FAIL", "Project registration failed in disposable database.", command=insert, **diagnostics) for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
             common = [sys.executable, "-m", "memory.run_embeddings", "--repo-path", str(fixture), "--project-id", project_id, "--target", "project", "--db-host", "127.0.0.1", "--db-port", str(port), "--db-name", "s0_db", "--db-user", "s0_user", "--code-model", code_model, "--text-model", text_model, "--no-include-pdfs"]
             print("[s0] Starting code embedding check...", file=sys.stderr, flush=True)
-            first = run_command([*common, "--mode", "code"], timeout=timeout, env=env, secret=password)
+            first = run_command_with_heartbeat(
+                [*common, "--mode", "code"],
+                timeout=timeout,
+                env=env,
+                secret=password,
+                label="Code embedding/indexing",
+            )
             if first["exit_code"] != 0:
                 blocked = model_unavailable(first["log"])
                 checks["S0-CODE-DIRECT"] = result("BLOCKED" if blocked else "FAIL", "Code model unavailable in the offline cache." if blocked else "Real code indexing failed in disposable database.", command=first)
@@ -244,7 +278,13 @@ def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: st
                 correct = any(row["symbol_name"] == "s0_nebula_probe" and row["dims"] == 768 and row["start_line"] == 1 for row in snapshot["code"])
                 checks["S0-CODE-DIRECT"] = result("PASS" if correct else "FAIL", "Code symbol and vector row verified." if correct else "Indexer returned success without expected symbol/768D embedding.", command=first, snapshot=snapshot, project_id=project_id)
             print("[s0] Starting text embedding check...", file=sys.stderr, flush=True)
-            text = run_command([*common, "--mode", "text"], timeout=timeout, env=env, secret=password)
+            text = run_command_with_heartbeat(
+                [*common, "--mode", "text"],
+                timeout=timeout,
+                env=env,
+                secret=password,
+                label="Text embedding/indexing",
+            )
             if text["exit_code"] != 0:
                 blocked = model_unavailable(text["log"])
                 checks["S0-TEXT"] = result("BLOCKED" if blocked else "FAIL", "Text model unavailable in the offline cache." if blocked else "Real text indexing failed in disposable database.", command=text)
