@@ -155,7 +155,18 @@ async def inspect_index(host: str, port: int, password: str, project_id: str) ->
         code = [dict(row) for row in code_rows]
         docs = [{"file_path": row["file_path"], "contains_nonce": "S0 nebula violet" in row["content"]} for row in text_rows]
         version = await conn.fetchval("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
-        return {"code": code[:30], "code_count": len(code), "text": docs[:30], "text_count": len(docs), "pgvector": version}
+        tracking_row = await conn.fetchrow(
+            "SELECT embedding_status, embedding_model_id, text_embedding_model_id FROM project_tracking WHERE project_id = $1::uuid",
+            project_id,
+        )
+        return {
+            "code": code[:30],
+            "code_count": len(code),
+            "text": docs[:30],
+            "text_count": len(docs),
+            "pgvector": version,
+            "project_tracking": dict(tracking_row) if tracking_row else None,
+        }
     finally:
         await conn.close()
 
@@ -257,7 +268,7 @@ def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: st
 
             env = os.environ.copy()
             env.update({"POSTGRES_PASSWORD": password, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1", "PYTHONPATH": str(ROOT)})
-            insert = run_command(["docker", "exec", container, "psql", "-U", "s0_user", "-d", "s0_db", "-v", "ON_ERROR_STOP=1", "-c", f"INSERT INTO projects(id, name) VALUES ('{project_id}', 'S0 fixture {run_id}');"], timeout=timeout)
+            insert = run_command(["docker", "exec", container, "psql", "-U", "s0_user", "-d", "s0_db", "-v", "ON_ERROR_STOP=1", "-c", f"INSERT INTO projects(id, name) VALUES ('{project_id}', 'S0 fixture {run_id}'); INSERT INTO project_tracking(project_id) VALUES ('{project_id}');"], timeout=timeout)
             if insert["exit_code"] != 0:
                 diagnostics = get_container_diagnostics(container, timeout=timeout, password=password)
                 return {name: result("FAIL", "Project registration failed in disposable database.", command=insert, **diagnostics) for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
@@ -275,8 +286,13 @@ def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: st
                 checks["S0-CODE-DIRECT"] = result("BLOCKED" if blocked else "FAIL", "Code model unavailable in the offline cache." if blocked else "Real code indexing failed in disposable database.", command=first)
             else:
                 snapshot = asyncio.run(inspect_index("127.0.0.1", port, password, project_id))
-                correct = any(row["symbol_name"] == "s0_nebula_probe" and row["dims"] == 768 and row["start_line"] == 1 for row in snapshot["code"])
-                checks["S0-CODE-DIRECT"] = result("PASS" if correct else "FAIL", "Code symbol and vector row verified." if correct else "Indexer returned success without expected symbol/768D embedding.", command=first, snapshot=snapshot, project_id=project_id)
+                tracking = snapshot.get("project_tracking") or {}
+                correct = (
+                    any(row["symbol_name"] == "s0_nebula_probe" and row["dims"] == 768 and row["start_line"] == 1 for row in snapshot["code"])
+                    and tracking.get("embedding_status") == "ready"
+                    and tracking.get("embedding_model_id") == code_model
+                )
+                checks["S0-CODE-DIRECT"] = result("PASS" if correct else "FAIL", "Code symbol, vector row and tracking state verified." if correct else "Indexer did not create the expected 768D code row and update project tracking.", command=first, snapshot=snapshot, project_id=project_id)
             print("[s0] Starting text embedding check...", file=sys.stderr, flush=True)
             text = run_command_with_heartbeat(
                 [*common, "--mode", "text"],
@@ -290,8 +306,13 @@ def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: st
                 checks["S0-TEXT"] = result("BLOCKED" if blocked else "FAIL", "Text model unavailable in the offline cache." if blocked else "Real text indexing failed in disposable database.", command=text)
             else:
                 snapshot = asyncio.run(inspect_index("127.0.0.1", port, password, project_id))
-                correct = any(row["contains_nonce"] and row["file_path"].endswith("readme.md") for row in snapshot["text"])
-                checks["S0-TEXT"] = result("PASS" if correct else "FAIL", "Document fact and source verified." if correct else "Text indexing returned success without expected fact/source.", command=text, snapshot=snapshot)
+                tracking = snapshot.get("project_tracking") or {}
+                correct = (
+                    any(row["contains_nonce"] and row["file_path"].endswith("readme.md") for row in snapshot["text"])
+                    and tracking.get("embedding_status") == "ready"
+                    and tracking.get("text_embedding_model_id") == text_model
+                )
+                checks["S0-TEXT"] = result("PASS" if correct else "FAIL", "Document fact, source and tracking state verified." if correct else "Text indexer did not return the expected fact and update project tracking.", command=text, snapshot=snapshot)
             checks["S0-CODE-SEARCH"] = result("NOT_RUN", "HTTP search requires an isolated API instance; staged after direct indexing.")
             checks["S0-REINDEX"] = result("NOT_RUN", "Reindex/edit/delete checks follow the first direct index proof.")
             return checks
