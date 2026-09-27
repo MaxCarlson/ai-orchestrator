@@ -203,3 +203,22 @@ def test_project_tracking_init_schema_covers_orchestrator_schema():
         }
 
     assert columns(orchestrator) <= columns(init_sql)
+
+
+def test_long_command_emits_visible_heartbeat(monkeypatch, capsys):
+    import time
+
+    def slow_command(argv, **kwargs):
+        time.sleep(0.05)
+        return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.05, "log": ""}
+
+    monkeypatch.setattr(validate_s0, "run_command", slow_command)
+    result = validate_s0.run_command_with_heartbeat(
+        ["fake-indexer"],
+        timeout=1,
+        label="Code indexing",
+        interval=0.005,
+    )
+
+    assert result["exit_code"] == 0
+    assert "Code indexing still running" in capsys.readouterr().err
