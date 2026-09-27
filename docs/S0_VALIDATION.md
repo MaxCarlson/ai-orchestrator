@@ -2,6 +2,12 @@
 
 This is the first S0.1 slice. `bin/validate_s0.py` checks host prerequisites, then (with `--write`) runs the existing `memory.run_embeddings` entrypoint against a generated Python and Markdown fixture in a **new, run-owned PostgreSQL container**. It checks the resulting rows for the expected Python symbol, 768-dimensional vector and document fact. It does not start the existing Compose stack or use its `docker_postgres_data` external volume. It does not call `/memory/code-index/{project_id}`, which currently places a database password in a task command. Search endpoints, queue, chat, history and reindex remain `NOT_RUN`; a direct insert is not an API or worker proof.
 
+## Latest host result
+
+On WSL2, the user ran commit `60740004d73d680da448201ee1592f59538e4fa2`. `S0-PREFLIGHT`, `S0-CODE-DIRECT`, and `S0-TEXT` passed. The code and text adapters loaded on CUDA and produced 768-dimensional vectors. The validator confirmed the expected code symbol, document fact, and project tracking status/model IDs. The report is local at `reports/s0-f79fa6366d69/report.md` and is not committed.
+
+The first run with cached models indexed the fixture successfully but failed when saving run stats: asyncpg's JSONB codec received Python dictionaries instead of JSON strings. `memory/run_embeddings.py` now serializes run stats, progress, and project tracking stats with `json.dumps`, preserving Python `None` as SQL NULL. The user reran the focused tests successfully (15 passed) and the subsequent direct code/text smoke passed.
+
 ## Troubleshooting and Root Cause History
 
 ### Disposable Database Startup Blocker (Resolved)
@@ -21,16 +27,17 @@ Live validation on WSL2/Linux waited 180 seconds, then marked `S0-CODE-DIRECT` a
 - Added `docker/postgres/init-scripts/03_project_tracking.sql` with mode `0644`.
 - `bin/validate_s0.py`: Added `stage_init_scripts` to stage init scripts into a disposable workspace with normalized `0o644` file and `0o755` directory permissions before bind mounting, immunizing runs from host umask/permission drift.
 - `bin/validate_s0.py`: Removed `--rm` from `docker run`. Container cleanup is handled in `finally` via verified run-label match with `docker rm -f`.
-- `bin/validate_s0.py`: Readiness polling uses TCP (`-h 127.0.0.1 -p 5432 -U s0_user -d s0_db`), checks `docker inspect` for premature container exit on every cycle, logs 5s progress heartbeats, and captures bounded, redacted container logs and safe inspect state in `evidence` on failure.
+- `bin/validate_s0.py`: Readiness polling uses TCP (`-h 127.0.0.1 -p 5432 -U s0_user -d s0_db`), checks `docker inspect` for premature container exit on every cycle, logs 5s progress heartbeats during readiness and embedding subprocesses, and captures bounded, redacted container logs and safe inspect state in `evidence` on failure.
+- `03_project_tracking.sql` matches the API-created project tracking columns; a regression test compares the two definitions. The fixture creates a tracking row and validates its ready state and model IDs after indexing.
+- `run_embeddings.py` JSONB writes serialize Python dictionaries before passing them to asyncpg. Regression tests cover final run stats, progress stats, project stats, and SQL NULL handling.
 
 ## Operator commands
 
-From the root of `ai-orchestrator`, on branch `agent/s0-disposable-db-startup-fix`:
+From the root of `ai-orchestrator`, on branch `agent/s0-project-tracking-schema-parity`:
 
 1. Run the deterministic regression tests (no Docker daemon or model weights required):
 ```bash
-python -m py_compile bin/validate_s0.py tests/test_validate_s0.py
-PYTHONPATH=. python -m pytest -q tests/test_validate_s0.py
+python -m py_compile bin/validate_s0.py tests/test_validate_s0.py memory/run_embeddings.py tests/test_run_embeddings_jsonb.py && PYTHONPATH=. python -m pytest -q tests/test_validate_s0.py tests/test_run_embeddings_jsonb.py
 ```
 
 2. Preview dry-run:
