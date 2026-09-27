@@ -1,8 +1,10 @@
 # Task Queue System Design
 
 **Created**: 2025-12-29
-**Status**: Design Phase
+**Status**: Historical design; basic implementation exists, but atomic multiprocess claims are not met
 **Purpose**: Filesystem-based task queue for AI CLI coordination
+
+> The current `shared/task_queue.py` writes the destination before unlinking the source, so the transition is not an atomic cross-process claim. This document describes intended behavior, not verified guarantees. Keep the filesystem contract during migration and see the current queue audit in [`docs/plans/20260926_ai-assistant/01_feature-design-and-code-audit.md`](plans/20260926_ai-assistant/01_feature-design-and-code-audit.md).
 
 ---
 
