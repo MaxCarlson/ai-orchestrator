@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -27,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 def _source_key(repo_path: Path) -> str:
     return hashlib.sha256(str(repo_path).encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _jsonb_param(value: Any) -> str | None:
+    """Encode Python values for asyncpg's built-in JSONB text codec."""
+    return json.dumps(value, ensure_ascii=False) if value is not None else None
 
 
 def parse_args() -> argparse.Namespace:
@@ -86,7 +92,7 @@ async def _finish_run(
         """,
         run_id,
         status,
-        stats,
+        _jsonb_param(stats),
         error,
     )
 
@@ -106,7 +112,7 @@ async def _update_run_progress(
         WHERE run_id = $1
         """,
         run_id,
-        stats,
+        _jsonb_param(stats),
     )
 
 
@@ -143,7 +149,7 @@ async def _update_project_tracking(
             code_model,
             text_model,
             mode,
-            embedding_stats,
+            _jsonb_param(embedding_stats),
         )
 
     if target in {"global", "both"}:
@@ -167,7 +173,7 @@ async def _update_project_tracking(
             code_model,
             text_model,
             mode,
-            global_embedding_stats,
+            _jsonb_param(global_embedding_stats),
         )
 
 
