@@ -12,6 +12,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -131,6 +132,36 @@ async def inspect_index(host: str, port: int, password: str, project_id: str) ->
         await conn.close()
 
 
+def stage_init_scripts(src: Path, dst: Path) -> Path:
+    """Copy PostgreSQL init scripts to workspace and ensure world-readable permissions."""
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    for path in dst.rglob("*"):
+        if path.is_file():
+            path.chmod(0o644)
+        elif path.is_dir():
+            path.chmod(0o755)
+    return dst
+
+
+def get_container_diagnostics(container: str, *, timeout: int = 10, password: str = "") -> dict[str, Any]:
+    """Capture safe container inspect state and bounded, redacted logs before cleanup."""
+    logs_res = run_command(["docker", "logs", container], timeout=min(timeout, 10), secret=password)
+    inspect_res = run_command(["docker", "inspect", "--format", "{{json .State}}", container], timeout=min(timeout, 5))
+    safe_state: dict[str, Any] = {}
+    if inspect_res["exit_code"] == 0:
+        try:
+            raw = json.loads(inspect_res["log"].strip())
+            safe_state = {k: raw[k] for k in ("Status", "Running", "Paused", "Restarting", "ExitCode", "Error", "StartedAt", "FinishedAt") if k in raw}
+        except Exception:
+            safe_state = {"raw": inspect_res["log"].strip()}
+    raw_logs = logs_res.get("log") or ""
+    redacted_logs = redact(raw_logs, (password,)) if password else raw_logs
+    return {
+        "container_logs": redacted_logs[-MAX_LOG:] if redacted_logs else "No container logs captured.",
+        "container_state": safe_state,
+    }
+
+
 def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: str) -> dict[str, dict[str, Any]]:
     """Start only a uniquely labelled container, and index a newly created fixture."""
     checks: dict[str, dict[str, Any]] = {}
@@ -144,35 +175,66 @@ def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: st
         fixture.mkdir()
         (fixture / "probe.py").write_text("def s0_nebula_probe():\n    return 'S0 nebula violet'\n", encoding="utf-8")
         (fixture / "readme.md").write_text("S0 nebula violet is the indexed fixture fact.\n", encoding="utf-8")
+        init_scripts_dir = stage_init_scripts(ROOT / "docker/postgres/init-scripts", Path(workspace) / "init-scripts")
         env_file = Path(workspace) / "postgres.env"
         env_file.write_text(f"POSTGRES_USER=s0_user\nPOSTGRES_PASSWORD={password}\nPOSTGRES_DB=s0_db\n", encoding="utf-8")
         os.chmod(env_file, 0o600)
         try:
-            start = run_command(["docker", "run", "--detach", "--rm", "--pull=never", "--name", container, "--label", marker, "--publish", "127.0.0.1::5432", "--env-file", str(env_file), "--mount", f"type=bind,src={ROOT / 'docker/postgres/init-scripts'},dst=/docker-entrypoint-initdb.d,readonly", "pgvector/pgvector:pg16"], timeout=timeout, secret=password)
+            start = run_command(["docker", "run", "--detach", "--pull=never", "--name", container, "--label", marker, "--publish", "127.0.0.1::5432", "--env-file", str(env_file), "--mount", f"type=bind,src={init_scripts_dir},dst=/docker-entrypoint-initdb.d,readonly", "pgvector/pgvector:pg16"], timeout=timeout, secret=password)
             if start["exit_code"] != 0:
                 return {name: result("BLOCKED", "Unable to start run-owned disposable database.", command=start) for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
             container_started = True
             port_result = run_command(["docker", "port", container, "5432/tcp"], timeout=timeout)
             match = re.search(r"127\.0\.0\.1:(\d+)", port_result["log"])
             if not match:
-                return {name: result("BLOCKED", "No loopback Docker port published.", command=port_result) for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
+                diagnostics = get_container_diagnostics(container, timeout=timeout, password=password)
+                return {name: result("BLOCKED", "No loopback Docker port published.", command=port_result, **diagnostics) for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
             port = int(match.group(1))
             ready = False
-            deadline = time.monotonic() + timeout
+            container_exited = False
+            started_wait = time.monotonic()
+            last_heartbeat = started_wait
+            deadline = started_wait + timeout
             while time.monotonic() < deadline:
-                check = run_command(["docker", "exec", container, "pg_isready", "-U", "s0_user", "-d", "s0_db"], timeout=min(5, timeout))
+                elapsed = int(time.monotonic() - started_wait)
+                inspect_check = run_command(["docker", "inspect", "--format", "{{json .State}}", container], timeout=min(5, timeout))
+                if inspect_check["exit_code"] == 0:
+                    try:
+                        state_obj = json.loads(inspect_check["log"].strip())
+                        if not state_obj.get("Running", True) or state_obj.get("Status") in ("exited", "dead"):
+                            container_exited = True
+                            print(f"[s0] Disposable database container exited prematurely (status={state_obj.get('Status')}, exit_code={state_obj.get('ExitCode')})", file=sys.stderr, flush=True)
+                            break
+                    except Exception:
+                        pass
+                elif "No such container" in inspect_check["log"]:
+                    container_exited = True
+                    break
+
+                check = run_command(["docker", "exec", container, "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "s0_user", "-d", "s0_db"], timeout=min(5, timeout))
                 if check["exit_code"] == 0:
                     ready = True
                     break
+
+                if time.monotonic() - last_heartbeat >= 5:
+                    print(f"[s0] Waiting for disposable database readiness (elapsed: {elapsed}s / timeout: {timeout}s)...", file=sys.stderr, flush=True)
+                    last_heartbeat = time.monotonic()
+
                 time.sleep(1)
+
             if not ready:
-                return {name: result("BLOCKED", "Disposable database did not become ready within timeout.") for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
+                diagnostics = get_container_diagnostics(container, timeout=timeout, password=password)
+                detail = "Disposable database container exited prematurely during initialization." if container_exited else "Disposable database did not become ready within timeout."
+                return {name: result("BLOCKED", detail, command=start, **diagnostics) for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
+
             env = os.environ.copy()
             env.update({"POSTGRES_PASSWORD": password, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1", "PYTHONPATH": str(ROOT)})
             insert = run_command(["docker", "exec", container, "psql", "-U", "s0_user", "-d", "s0_db", "-v", "ON_ERROR_STOP=1", "-c", f"INSERT INTO projects(id, name) VALUES ('{project_id}', 'S0 fixture {run_id}');"], timeout=timeout)
             if insert["exit_code"] != 0:
-                return {name: result("FAIL", "Project registration failed in disposable database.", command=insert) for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
+                diagnostics = get_container_diagnostics(container, timeout=timeout, password=password)
+                return {name: result("FAIL", "Project registration failed in disposable database.", command=insert, **diagnostics) for name in ("S0-CODE-DIRECT", "S0-TEXT", "S0-CODE-SEARCH", "S0-REINDEX")}
             common = [sys.executable, "-m", "memory.run_embeddings", "--repo-path", str(fixture), "--project-id", project_id, "--target", "project", "--db-host", "127.0.0.1", "--db-port", str(port), "--db-name", "s0_db", "--db-user", "s0_user", "--code-model", code_model, "--text-model", text_model, "--no-include-pdfs"]
+            print("[s0] Starting code embedding check...", file=sys.stderr, flush=True)
             first = run_command([*common, "--mode", "code"], timeout=timeout, env=env, secret=password)
             if first["exit_code"] != 0:
                 blocked = model_unavailable(first["log"])
@@ -181,6 +243,7 @@ def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: st
                 snapshot = asyncio.run(inspect_index("127.0.0.1", port, password, project_id))
                 correct = any(row["symbol_name"] == "s0_nebula_probe" and row["dims"] == 768 and row["start_line"] == 1 for row in snapshot["code"])
                 checks["S0-CODE-DIRECT"] = result("PASS" if correct else "FAIL", "Code symbol and vector row verified." if correct else "Indexer returned success without expected symbol/768D embedding.", command=first, snapshot=snapshot, project_id=project_id)
+            print("[s0] Starting text embedding check...", file=sys.stderr, flush=True)
             text = run_command([*common, "--mode", "text"], timeout=timeout, env=env, secret=password)
             if text["exit_code"] != 0:
                 blocked = model_unavailable(text["log"])
@@ -199,7 +262,7 @@ def isolated_indexing(timeout: int, run_id: str, code_model: str, text_model: st
             if container_started:
                 inspect = run_command(["docker", "inspect", "--format", "{{index .Config.Labels \"ai-orchestrator-s0\"}}", container], timeout=min(timeout, 10))
                 if inspect["exit_code"] == 0 and inspect["log"].strip() == run_id:
-                    run_command(["docker", "stop", "--time", "5", container], timeout=min(timeout, 15))
+                    run_command(["docker", "rm", "-f", container], timeout=min(timeout, 15))
 
 
 def main(argv: list[str] | None = None) -> int:
