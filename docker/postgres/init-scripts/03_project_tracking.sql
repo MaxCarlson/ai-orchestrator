@@ -1,5 +1,5 @@
 -- Project Tracking Schema
--- Tracks project memory and embedding status
+-- Tracks project memory and embedding status.
 
 CREATE TABLE IF NOT EXISTS project_tracking (
     project_id UUID PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS project_tracking (
     global_embedding_mode TEXT,
     embedding_stats JSONB,
     global_embedding_stats JSONB,
+    gpu_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    gpu_device TEXT,
+    embedding_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    auto_index_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    resource_profile_id TEXT,
+    notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
