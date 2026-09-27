@@ -191,7 +191,7 @@ def test_project_tracking_init_schema_covers_orchestrator_schema():
 
     def columns(source):
         match = re.search(
-            r"CREATE TABLE IF NOT EXISTS project_tracking\\s*\\((.*?)\\n\\s*\\);",
+            r"CREATE TABLE IF NOT EXISTS project_tracking\s*\((.*?)\n\s*\);",
             source,
             re.DOTALL,
         )
