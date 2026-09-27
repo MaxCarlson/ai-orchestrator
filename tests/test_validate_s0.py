@@ -180,3 +180,26 @@ def test_readiness_polling_uses_tcp_check(monkeypatch):
     assert res["S0-CODE-DIRECT"]["status"] == "BLOCKED"
     assert res["S0-TEXT"]["status"] == "BLOCKED"
 
+
+
+def test_project_tracking_init_schema_covers_orchestrator_schema():
+    """Fresh DB bootstrap must contain every column the API creates at runtime."""
+    import re
+
+    init_sql = (validate_s0.ROOT / "docker/postgres/init-scripts/03_project_tracking.sql").read_text(encoding="utf-8")
+    orchestrator = (validate_s0.ROOT / "docker/orchestrator/main.py").read_text(encoding="utf-8")
+
+    def columns(source):
+        match = re.search(
+            r"CREATE TABLE IF NOT EXISTS project_tracking\\s*\\((.*?)\\n\\s*\\);",
+            source,
+            re.DOTALL,
+        )
+        assert match, "project_tracking CREATE TABLE definition not found"
+        return {
+            line.strip().split()[0].rstrip(",")
+            for line in match.group(1).splitlines()
+            if line.strip() and not line.strip().startswith("--")
+        }
+
+    assert columns(orchestrator) <= columns(init_sql)
