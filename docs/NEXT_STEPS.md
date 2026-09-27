@@ -15,6 +15,8 @@ adding new architecture.
 - [ ] Queue one code-index job for this repo and confirm `code_chunks` rows.
 - [ ] Queue one text-index job for docs/README content and confirm `text_chunks` rows.
 - [ ] Confirm code/text search endpoints return relevant snippets.
+- [ ] Run the retrieval eval harness in `eval/retrieval/` against live search
+      results once this repo is indexed.
 
 ## P3 - Memory Wiring (after P2 is confirmed working)
 - [ ] Add `kind TEXT` column to `memory_items` and `global_memory_items` (see `memory/PLAN.md` Phase 1 for migration SQL).

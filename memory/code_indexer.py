@@ -11,7 +11,7 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional
 
 import asyncpg
 import numpy as np
@@ -168,7 +168,7 @@ async def index_repository(
         processed += 1
         stats["files_processed"] = processed
         chunks, file_stats = chunk_file_with_stats(path, include_text=False)
-        if file_stats.file_type == "python":
+        if file_stats.file_type in {"python", "typescript", "shell"}:
             stats["code_files"] += 1
             if file_stats.ast_status == "success":
                 stats["ast_success"] += 1

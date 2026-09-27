@@ -16,7 +16,8 @@ This is a self-managing AI orchestration platform: a FastAPI + PostgreSQL hub th
 2. Run the first real code/text embedding job for this repo.
 3. Wire retrieved memory context into the chat prompt pipeline.
 
-**Do not rebuild:** pgvector schema, code/text chunk tables, hybrid retrieval (dense + BM25 + RRF + reranker), text/code ingestion endpoints, LM Studio provider routing — all exist.
+
++**Do not rebuild:** pgvector schema, code/text chunk tables, hybrid retrieval (dense + BM25 + RRF + reranker), text/code ingestion endpoints, LM Studio provider routing — all exist.
 
 ---
 

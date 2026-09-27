@@ -1,0 +1,49 @@
+queries:
+  - id: tq-001
+    text: task queue state machine
+    domain: task_queue
+    scope: mixed
+  - id: tq-002
+    text: local worker loop assigned queued in_progress
+    domain: task_queue
+    scope: code
+  - id: proj-001
+    text: register project POST projects project tracking defaults
+    domain: project_registration
+    scope: code
+  - id: proj-002
+    text: .kmproj project id marker file
+    domain: project_registration
+    scope: mixed
+  - id: emb-001
+    text: run_embeddings mode auto code text
+    domain: embedding_pipeline
+    scope: code
+  - id: emb-002
+    text: code indexer hash skip chunks indexed
+    domain: embedding_pipeline
+    scope: code
+  - id: ret-001
+    text: hybrid_search dense BM25 RRF reranker
+    domain: retrieval_memory
+    scope: code
+  - id: ret-002
+    text: memory notes review candidate promotion
+    domain: retrieval_memory
+    scope: text
+  - id: lm-001
+    text: ensureLmStudio localUrl LM Studio routing
+    domain: lm_studio_routing
+    scope: code
+  - id: lm-002
+    text: lms bridge load model list loaded
+    domain: lm_studio_routing
+    scope: code
+  - id: ctl-001
+    text: runtime settings pause embeddings local models
+    domain: controls
+    scope: code
+  - id: ctl-002
+    text: task priority cancel local cancel all
+    domain: controls
+    scope: code
