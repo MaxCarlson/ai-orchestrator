@@ -222,3 +222,261 @@ def test_long_command_emits_visible_heartbeat(monkeypatch, capsys):
 
     assert result["exit_code"] == 0
     assert "Code indexing still running" in capsys.readouterr().err
+
+
+def test_execute_search_validation_success(monkeypatch):
+    calls = []
+
+    def mock_http_request(url, *, method="GET", payload=None, timeout=30.0, label=""):
+        calls.append({"url": url, "method": method, "payload": payload})
+        if "/memory/code-search/test-project" in url:
+            return {
+                "status_code": 200,
+                "elapsed_seconds": 0.05,
+                "body": [
+                    {
+                        "symbol_name": "s0_nebula_probe",
+                        "file_path": "fixture/probe.py",
+                        "start_line": 1,
+                        "end_line": 2,
+                        "similarity": 0.88,
+                        "rrf_score": 0.5,
+                    }
+                ],
+                "error": None,
+            }
+        if "/memory/code-search/" in url:  # decoy
+            return {
+                "status_code": 200,
+                "elapsed_seconds": 0.02,
+                "body": [],
+                "error": None,
+            }
+        if "/memory/text-search/test-project" in url:
+            return {
+                "status_code": 200,
+                "elapsed_seconds": 0.05,
+                "body": {
+                    "count": 1,
+                    "results": [
+                        {
+                            "file_path": "fixture/readme.md",
+                            "content": "S0 nebula violet is the indexed fixture fact.\n",
+                            "similarity": 0.82,
+                            "rrf_score": 0.45,
+                        }
+                    ],
+                },
+                "error": None,
+            }
+        if "/memory/text-search/" in url:  # decoy
+            return {
+                "status_code": 200,
+                "elapsed_seconds": 0.02,
+                "body": {"count": 0, "results": []},
+                "error": None,
+            }
+        return {"status_code": 404, "elapsed_seconds": 0.01, "body": None, "error": "Not found"}
+
+    monkeypatch.setattr(validate_s0, "http_request_with_heartbeat", mock_http_request)
+
+    res = validate_s0.execute_search_validation(api_port=9999, project_id="test-project")
+
+    assert res["S0-CODE-SEARCH"]["status"] == "PASS"
+    assert "s0_nebula_probe" in res["S0-CODE-SEARCH"]["detail"]
+    assert res["S0-CODE-SEARCH"]["evidence"]["status_code"] == 200
+    assert len(res["S0-CODE-SEARCH"]["evidence"]["matching_chunks"]) == 1
+    assert res["S0-CODE-SEARCH"]["evidence"]["decoy_test"]["results_count"] == 0
+
+    assert res["S0-TEXT-SEARCH"]["status"] == "PASS"
+    assert "readme.md" in res["S0-TEXT-SEARCH"]["detail"]
+    assert res["S0-TEXT-SEARCH"]["evidence"]["status_code"] == 200
+    assert len(res["S0-TEXT-SEARCH"]["evidence"]["matching_chunks"]) == 1
+    assert res["S0-TEXT-SEARCH"]["evidence"]["decoy_test"]["results_count"] == 0
+
+
+def test_execute_search_validation_fails_on_missing_symbol_or_fact(monkeypatch):
+    def mock_http_request(url, *, method="GET", payload=None, timeout=30.0, label=""):
+        if "/memory/code-search/test-project" in url:
+            return {
+                "status_code": 200,
+                "elapsed_seconds": 0.05,
+                "body": [
+                    {
+                        "symbol_name": "unrelated_symbol",
+                        "file_path": "fixture/other.py",
+                    }
+                ],
+                "error": None,
+            }
+        if "/memory/code-search/" in url:
+            return {"status_code": 200, "elapsed_seconds": 0.01, "body": [], "error": None}
+        if "/memory/text-search/test-project" in url:
+            return {
+                "status_code": 200,
+                "elapsed_seconds": 0.05,
+                "body": {
+                    "count": 1,
+                    "results": [
+                        {
+                            "file_path": "fixture/other.md",
+                            "content": "No known fact here.\n",
+                        }
+                    ],
+                },
+                "error": None,
+            }
+        if "/memory/text-search/" in url:
+            return {"status_code": 200, "elapsed_seconds": 0.01, "body": {"count": 0, "results": []}, "error": None}
+        return {"status_code": 404, "elapsed_seconds": 0.01, "body": None, "error": "Not found"}
+
+    monkeypatch.setattr(validate_s0, "http_request_with_heartbeat", mock_http_request)
+
+    res = validate_s0.execute_search_validation(api_port=9999, project_id="test-project")
+
+    assert res["S0-CODE-SEARCH"]["status"] == "FAIL"
+    assert "did not include 's0_nebula_probe'" in res["S0-CODE-SEARCH"]["detail"]
+
+    assert res["S0-TEXT-SEARCH"]["status"] == "FAIL"
+    assert "did not include fixture fact in readme.md" in res["S0-TEXT-SEARCH"]["detail"]
+
+
+def test_execute_search_validation_fails_on_project_scope_leak(monkeypatch):
+    def mock_http_request(url, *, method="GET", payload=None, timeout=30.0, label=""):
+        # Leaking results for decoy project query
+        if "/memory/code-search/" in url:
+            return {
+                "status_code": 200,
+                "elapsed_seconds": 0.02,
+                "body": [{"symbol_name": "s0_nebula_probe", "file_path": "probe.py"}],
+                "error": None,
+            }
+        if "/memory/text-search/" in url:
+            return {
+                "status_code": 200,
+                "elapsed_seconds": 0.02,
+                "body": {"count": 1, "results": [{"file_path": "readme.md", "content": "S0 nebula violet"}]},
+                "error": None,
+            }
+        return {"status_code": 404, "elapsed_seconds": 0.01, "body": None, "error": "Not found"}
+
+    monkeypatch.setattr(validate_s0, "http_request_with_heartbeat", mock_http_request)
+
+    res = validate_s0.execute_search_validation(api_port=9999, project_id="test-project")
+
+    assert res["S0-CODE-SEARCH"]["status"] == "FAIL"
+    assert "project isolation" in res["S0-CODE-SEARCH"]["detail"]
+
+    assert res["S0-TEXT-SEARCH"]["status"] == "FAIL"
+    assert "project isolation" in res["S0-TEXT-SEARCH"]["detail"]
+
+
+def test_wait_for_api_readiness_detects_exit():
+    class DummyProc:
+        returncode = 1
+        def poll(self):
+            return 1
+
+    ready, exited, detail = validate_s0.wait_for_api_readiness(api_port=9999, api_proc=DummyProc(), timeout=2)
+    assert not ready
+    assert exited
+    assert "exit code 1" in detail
+
+
+def test_wait_for_api_readiness_succeeds(monkeypatch):
+    class DummyProc:
+        returncode = None
+        def poll(self):
+            return None
+
+    class DummyResponse:
+        status = 200
+        def read(self):
+            return b'{"status": "healthy"}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(validate_s0.urllib.request, "urlopen", lambda req, timeout: DummyResponse())
+
+    ready, exited, detail = validate_s0.wait_for_api_readiness(api_port=9999, api_proc=DummyProc(), timeout=2)
+    assert ready
+    assert not exited
+    assert "healthy" in detail
+
+
+def test_http_request_with_heartbeat_handles_httperror(monkeypatch):
+    import io
+    import urllib.error
+
+    def mock_urlopen(req, timeout):
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8000",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},
+            fp=io.BytesIO(b'{"detail": "DB crashed"}'),
+        )
+
+    monkeypatch.setattr(validate_s0.urllib.request, "urlopen", mock_urlopen)
+
+    res = validate_s0.http_request_with_heartbeat("http://127.0.0.1:8000/err", interval=0.01)
+    assert res["status_code"] == 500
+    assert res["body"] == {"detail": "DB crashed"}
+    assert "HTTPError 500" in res["error"]
+
+
+def test_isolated_indexing_cleans_up_api_process_on_failure(monkeypatch):
+    terminated = []
+
+    class MockProc:
+        returncode = 0
+        def poll(self):
+            return 0
+        def terminate(self):
+            terminated.append("terminated")
+        def wait(self, timeout=None):
+            return 0
+
+    def mock_run_command(argv, **kwargs):
+        cmd_str = " ".join(argv)
+        if "docker run" in cmd_str:
+            return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.1, "log": "cid123\n"}
+        if "docker port" in cmd_str:
+            return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.01, "log": "5432/tcp -> 127.0.0.1:54321\n"}
+        if "docker inspect --format {{json .State}}" in cmd_str:
+            return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.01, "log": json.dumps({"Status": "running", "Running": True, "ExitCode": 0})}
+        if "pg_isready" in cmd_str:
+            return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.01, "log": "accepting\n"}
+        if "psql" in cmd_str:
+            return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.01, "log": "INSERT 0 1\n"}
+        if "memory.run_embeddings" in cmd_str:
+            return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.01, "log": "done\n"}
+        if "docker inspect --format {{index .Config.Labels" in cmd_str:
+            return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.01, "log": "test-run-id\n"}
+        if "docker rm -f" in cmd_str:
+            return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.01, "log": "cid123\n"}
+        return {"argv": argv, "exit_code": 0, "elapsed_seconds": 0.01, "log": ""}
+
+    monkeypatch.setattr(validate_s0, "run_command", mock_run_command)
+    async def mock_inspect(*args, **kwargs):
+        return {
+            "code": [{"symbol_name": "s0_nebula_probe", "dims": 768, "start_line": 1}],
+            "text": [{"contains_nonce": True, "file_path": "readme.md"}],
+            "project_tracking": {"embedding_status": "ready", "embedding_model_id": "cmodel", "text_embedding_model_id": "tmodel"},
+        }
+    monkeypatch.setattr(validate_s0, "inspect_index", mock_inspect)
+    monkeypatch.setattr(validate_s0.subprocess, "Popen", lambda *args, **kwargs: MockProc())
+    monkeypatch.setattr(validate_s0, "wait_for_api_readiness", lambda *args, **kwargs: (True, False, "ready"))
+
+    def raise_err(*args, **kwargs):
+        raise RuntimeError("simulated search crash")
+
+    monkeypatch.setattr(validate_s0, "execute_search_validation", raise_err)
+
+    res = validate_s0.isolated_indexing(timeout=10, run_id="test-run-id", code_model="cmodel", text_model="tmodel")
+    assert "simulated search crash" in res["S0-CODE-SEARCH"]["evidence"]["error"]
+    assert "terminated" in terminated
+
+

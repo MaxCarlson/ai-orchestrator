@@ -4,7 +4,7 @@
 
 The [architecture plan](plans/20260926_ai-assistant/00_implementation-plan.md) defines S0–S8. The [execution plan](plans/20260926_ai-assistant/02_execution-plan-and-validation.md) supplies current code findings, ordered work packages and acceptance checks. Checked implementation items indicate source exists; live evidence is stated separately below.
 
-**Host evidence:** The user ran the disposable indexing suite on WSL2 at commit `60740004d73d680da448201ee1592f59538e4fa2`. `S0-PREFLIGHT`, `S0-CODE-DIRECT`, and `S0-TEXT` passed. The report is local at `reports/s0-f79fa6366d69/report.md`; the report itself is not committed.
+**Host evidence:** On WSL2, `S0-PREFLIGHT`, `S0-CODE-DIRECT`, `S0-TEXT`, `S0-CODE-SEARCH`, and `S0-TEXT-SEARCH` passed against the run-owned disposable database and isolated loopback API process. The report is local at `reports/s0-e2e47e7974e7/report.md`; reports are untracked and not committed.
 
 ## P0 — Repeatable S0 validation and immediate containment
 
@@ -26,8 +26,8 @@ The [architecture plan](plans/20260926_ai-assistant/00_implementation-plan.md) d
 ## P2 — Code/text indexing and worker proof
 
 - [x] Run direct code and text indexing on a disposable fixture with real PostgreSQL and cached embedding models; verify expected symbol/source, 768D code vector, and project tracking status/model IDs.
-- [ ] Verify isolation against a decoy project and check cross-project search cannot return its rows.
-- [ ] Verify `POST /memory/code-search/{project_id}` and `POST /memory/text-search/{project_id}` return the expected fixture sources.
+- [x] Verify isolation against a decoy project and check cross-project search cannot return its rows.
+- [x] Verify `POST /memory/code-search/{project_id}` and `POST /memory/text-search/{project_id}` return the expected fixture sources.
 - [ ] Capture unchanged/edit/delete/rename reindex behavior. Current code indexer lacks deletion reconciliation; retain a failing reproduction.
 - [ ] Run a harmless task and queued code/text indexing through an isolated host worker.
 - [ ] Verify loop restart and continued processing after a failed task.

@@ -1,35 +1,54 @@
-# S0 validator: disposable direct indexing smoke
+# S0 validator: disposable indexing and search endpoint validation
 
-This is the first S0.1 slice. `bin/validate_s0.py` checks host prerequisites, then (with `--write`) runs the existing `memory.run_embeddings` entrypoint against a generated Python and Markdown fixture in a **new, run-owned PostgreSQL container**. It checks the resulting rows for the expected Python symbol, 768-dimensional vector and document fact. It does not start the existing Compose stack or use its `docker_postgres_data` external volume. It does not call `/memory/code-index/{project_id}`, which currently places a database password in a task command. Search endpoints, queue, chat, history and reindex remain `NOT_RUN`; a direct insert is not an API or worker proof.
+This S0.1 slice extends the validator to exercise the existing `POST /memory/code-search/{project_id}` and `POST /memory/text-search/{project_id}` endpoints against the validator's run-owned disposable PostgreSQL fixture. `bin/validate_s0.py` checks host prerequisites, runs direct indexing for code and text fixtures, starts a validator-owned API process bound strictly to loopback (`127.0.0.1`), polls API `/health` readiness with heartbeats, and asserts expected symbols, document facts, and project scoping (decoy project query isolation). It does not start the existing Compose stack or use its `docker_postgres_data` external volume. It does not implement reindex, worker, chat, or history checks.
 
 ## Latest host result
 
-On WSL2, the user ran commit `60740004d73d680da448201ee1592f59538e4fa2`. `S0-PREFLIGHT`, `S0-CODE-DIRECT`, and `S0-TEXT` passed. The code and text adapters loaded on CUDA and produced 768-dimensional vectors. The validator confirmed the expected code symbol, document fact, and project tracking status/model IDs. The report is local at `reports/s0-f79fa6366d69/report.md` and is not committed.
-
-The first run with cached models indexed the fixture successfully but failed when saving run stats: asyncpg's JSONB codec received Python dictionaries instead of JSON strings. `memory/run_embeddings.py` now serializes run stats, progress, and project tracking stats with `json.dumps`, preserving Python `None` as SQL NULL. The user reran the focused tests successfully (15 passed) and the subsequent direct code/text smoke passed.
+On WSL2, `S0-PREFLIGHT`, `S0-CODE-DIRECT`, `S0-TEXT`, `S0-CODE-SEARCH`, and `S0-TEXT-SEARCH` passed.
+- Direct code indexing created the 768D code vector and updated tracking state.
+- Direct text indexing created the text chunk and updated tracking state.
+- `POST /memory/code-search/{project_id}` returned the indexed symbol `s0_nebula_probe` in `probe.py` with similarity ~0.97 and verified that querying a decoy project returned 0 results.
+- `POST /memory/text-search/{project_id}` (with `use_reranker: false` to reuse the cached `BAAI/bge-base-en-v1.5` text model without requiring an uncached cross-encoder) returned the indexed fact `"S0 nebula violet"` in `readme.md` with similarity ~0.80 and verified that querying a decoy project returned 0 results.
+- Both the API process and disposable Docker container were cleaned up in `finally`.
 
 ## Troubleshooting and Root Cause History
 
-### Disposable Database Startup Blocker (Resolved)
+### 1. Orchestrator Settings Extra Keys Rejection (Resolved)
+
+**Observed Failure:**
+When launching the API process outside Docker (`docker/orchestrator/main.py`), Pydantic Settings raised a `ValidationError` with 13 extra forbidden inputs (`pgadmin_email`, `ko_web_*`, etc.).
+
+**Root Cause:**
+Inside Docker, `docker/orchestrator/*.py` runs in `/app` where `.env` is not present. On the host, the root `.env` exists. Pydantic v2 `BaseSettings` defaults to `extra='forbid'` unless configured. Because `Settings.Config` lacked `extra = "ignore"`, unrecognized keys in `.env` aborted startup.
+
+**Fix Applied:**
+Added `extra = "ignore"` to `Settings.Config` in `docker/orchestrator/main.py`.
+
+### 2. Disposable Database Startup Blocker (Resolved)
 
 **Observed Failure:**
 Live validation on WSL2/Linux waited 180 seconds, then marked `S0-CODE-DIRECT` and `S0-TEXT` as `BLOCKED` with `"Disposable database did not become ready within timeout."` Check evidence was empty and the container was gone.
 
 **Root Causes Identified:**
-1. **Init Script Permissions (`02_device_tracking.sql`):** `docker/postgres/init-scripts/02_device_tracking.sql` was checked out/stored with host mode `0600` (`-rw-------`). When mounted read-only into `/docker-entrypoint-initdb.d`, the container process running as UID 999 (`postgres`) was denied access (`psql: error: /docker-entrypoint-initdb.d/02_device_tracking.sql: Permission denied`), causing `docker-entrypoint.sh` to abort immediately with exit code 1.
-2. **Container Disappearance (`--rm`):** `bin/validate_s0.py` passed `--rm` to `docker run`. When the container crashed during initdb, Docker immediately destroyed it, leaving no container for post-mortem inspection or log retrieval.
-3. **Socket Race Condition (`pg_isready`):** Polling used `docker exec container pg_isready` without `-h 127.0.0.1`. In official PostgreSQL containers, `docker-entrypoint.sh` runs init scripts against a temporary Unix-socket-only server (`-c listen_addresses=''`). Polling Unix socket reported readiness prematurely while init scripts were still running, and connection attempts during temporary server shutdown were dropped (`ConnectionResetError`).
-4. **Missing Diagnostics & Heartbeat:** The polling loop lacked container exit detection and ran quietly for the full 180s without heartbeat. On failure, no startup logs or container state were saved into `evidence`.
-5. **Schema Gap (`project_tracking`):** `project_tracking` table was originally created dynamically in `docker/orchestrator/main.py` but omitted from `docker/postgres/init-scripts/`, causing `run_embeddings.py` to fail with `UndefinedTableError` once database startup succeeded.
+1. **Init Script Permissions (`02_device_tracking.sql`):** `docker/postgres/init-scripts/02_device_tracking.sql` was checked out with host mode `0600`. The container process running as UID 999 (`postgres`) was denied access (`psql: error: ... Permission denied`), causing `docker-entrypoint.sh` to abort immediately with exit code 1.
+2. **Container Disappearance (`--rm`):** `bin/validate_s0.py` passed `--rm` to `docker run`. When the container crashed during initdb, Docker destroyed it before post-mortem inspection.
+3. **Socket Race Condition (`pg_isready`):** Polling used Unix socket without `-h 127.0.0.1`, reporting readiness prematurely while init scripts were still running on the temporary server.
+4. **Missing Diagnostics & Heartbeat:** The polling loop ran quietly without heartbeat or exit detection.
+5. **Schema Gap (`project_tracking`):** `project_tracking` was omitted from `docker/postgres/init-scripts/`, causing `UndefinedTableError`.
 
 **Fix Applied:**
-- Set `chmod 644 docker/postgres/init-scripts/02_device_tracking.sql`.
-- Added `docker/postgres/init-scripts/03_project_tracking.sql` with mode `0644`.
-- `bin/validate_s0.py`: Added `stage_init_scripts` to stage init scripts into a disposable workspace with normalized `0o644` file and `0o755` directory permissions before bind mounting, immunizing runs from host umask/permission drift.
-- `bin/validate_s0.py`: Removed `--rm` from `docker run`. Container cleanup is handled in `finally` via verified run-label match with `docker rm -f`.
-- `bin/validate_s0.py`: Readiness polling uses TCP (`-h 127.0.0.1 -p 5432 -U s0_user -d s0_db`), checks `docker inspect` for premature container exit on every cycle, logs 5s progress heartbeats during readiness and embedding subprocesses, and captures bounded, redacted container logs and safe inspect state in `evidence` on failure.
-- `03_project_tracking.sql` matches the API-created project tracking columns; a regression test compares the two definitions. The fixture creates a tracking row and validates its ready state and model IDs after indexing.
-- `run_embeddings.py` JSONB writes serialize Python dictionaries before passing them to asyncpg. Regression tests cover final run stats, progress stats, project stats, and SQL NULL handling.
+- Normalized init script permissions and added `03_project_tracking.sql`.
+- `bin/validate_s0.py` stages init scripts to workspace with `0o644` file permissions before mounting.
+- Removed `--rm` and poll TCP `127.0.0.1:5432` with premature exit detection and 5s heartbeats. Container cleanup is handled in `finally` via run-label match with `docker rm -f`.
+- Serialized JSONB fields in `memory/run_embeddings.py` using `json.dumps`.
+
+### 3. Isolated API Process Lifecycle & Search Validation
+
+- `bin/validate_s0.py` binds a free loopback port via `socket.bind(('127.0.0.1', 0))`.
+- Starts `uvicorn --app-dir docker/orchestrator main:app --host 127.0.0.1 --port <port>` with environment variables pointing exclusively to the disposable DB container and workspace task queue.
+- Polls `http://127.0.0.1:<port>/health` with 5s heartbeats and process exit detection. On premature exit or timeout, logs are captured in evidence.
+- Exercises `POST /memory/code-search/{project_id}` and `POST /memory/text-search/{project_id}` with known fixture queries and decoy project queries to verify project scoping.
+- Terminates the API process and removes the disposable database in `finally`.
 
 ## Operator commands
 
@@ -37,7 +56,7 @@ From the root of `ai-orchestrator`, on branch `agent/s0-project-tracking-schema-
 
 1. Run the deterministic regression tests (no Docker daemon or model weights required):
 ```bash
-python -m py_compile bin/validate_s0.py tests/test_validate_s0.py memory/run_embeddings.py tests/test_run_embeddings_jsonb.py && PYTHONPATH=. python -m pytest -q tests/test_validate_s0.py tests/test_run_embeddings_jsonb.py
+python -m py_compile bin/validate_s0.py tests/test_validate_s0.py docker/orchestrator/main.py memory/run_embeddings.py tests/test_run_embeddings_jsonb.py && PYTHONPATH=. python -m pytest -q tests/test_validate_s0.py tests/test_run_embeddings_jsonb.py
 ```
 
 2. Preview dry-run:
@@ -50,20 +69,17 @@ python bin/validate_s0.py -s indexing -n -o "$(mktemp -d)/s0-preview"
 docker pull pgvector/pgvector:pg16
 ```
 
-4. Execute disposable database validation (with model downloads disabled):
+4. Execute disposable database and search endpoint validation (with model downloads disabled):
 ```bash
 python bin/validate_s0.py -s indexing -w -t 180
 ```
 
-With the database startup fix applied, the disposable database initializes in ~5-10s with visible progress heartbeats. If offline model weights (`microsoft/codebert-base` and `BAAI/bge-base-en-v1.5`) are not yet cached in `~/.cache/huggingface/hub`, `S0-CODE-DIRECT` and `S0-TEXT` will cleanly report `BLOCKED: Code/Text model unavailable in the offline cache.` with exit code 2, verifying database startup independently from model availability.
-
 ## Status and limits
 
-- `PASS` requires a successful subprocess and a specific row assertion; `FAIL` records a command or row assertion that executed and failed; `BLOCKED` means a prerequisite or explicit write flag is missing; `NOT_RUN` means the check is staged or unselected.
-- Exit 0 means all selected required checks passed, exit 1 means at least one executed check failed, and exit 2 means there are blockers and no executed failures. `argparse` also uses exit 2 for invalid options.
-- Reports include timestamps, repository branch/commit/dirty bit, Python/platform, safe command arguments, bounded redacted logs, status, fixture project ID and DB extension version when available. Credential values are omitted.
-- Offline model mode is enforced (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`). A missing cached model is `BLOCKED`; other indexing failures are `FAIL` and need the logged reproduction investigated. A cached model can still be incompatible with the fixed vector(768) schema; that is a real failed assertion.
-- Direct code and document checks are ordered. The indexer currently scans all files, so this fixture has only two tiny files. This step does not establish ignore handling, deletion reconciliation, model replacement, API search ranking or integration with the host worker.
+- `PASS` requires a successful HTTP response (200 OK) with the expected fixture symbol/fact and verified decoy isolation (0 results for unrelated project).
+- `FAIL` records a command, HTTP error, assertion failure, or scope leak.
+- `BLOCKED` means a prerequisite, cached model, or explicit write flag is missing.
+- `NOT_RUN` means the check is staged for a later S0 slice (`S0-REINDEX`, `S0-WORKER`, `S0-CHAT`, etc.).
+- Offline model mode is enforced (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`).
 
-Follow up after the first report: repair the smallest observed failure, then extend this validator with an isolated API, search/reindex assertions, queue, real LM Studio chat and persistence replay. The full acceptance criteria are in `docs/plans/20260926_ai-assistant/02_execution-plan-and-validation.md`.
 
