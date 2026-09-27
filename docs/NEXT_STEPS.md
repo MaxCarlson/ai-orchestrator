@@ -1,7 +1,6 @@
 # AI Orchestrator - Current Execution Priorities
 
-Keep this list short. The current goal is to prove the built core works before
-adding new architecture.
+Keep this list short. These are the outstanding runtime checks found in the January 2026 status snapshot; mark each pass, failure, or environment block with evidence. The current architecture and dependencies are in [`docs/plans/20260926_ai-assistant/00_implementation-plan.md`](plans/20260926_ai-assistant/00_implementation-plan.md).
 
 ## P1 - Local Model Chat
 - [x] Fix `aioc` project status startup type error.
@@ -16,10 +15,12 @@ adding new architecture.
 - [ ] Queue one text-index job for docs/README content and confirm `text_chunks` rows.
 - [ ] Confirm code/text search endpoints return relevant snippets.
 
-## P3 - Memory Wiring (after P2 is confirmed working)
+## P3 - Memory Wiring (after P2 is confirmed working and workspace/chat prerequisites are in place)
+
+Do not inject memory until project identity and auth scope are explicit and conversation history is durable.
 - [ ] Add `kind TEXT` column to `memory_items` and `global_memory_items` (see `memory/PLAN.md` Phase 1 for migration SQL).
 - [ ] Add `kinds` filter to `dense_search()` and `hybrid_search()` in `memory/retrieval.py`.
-- [ ] Add `GET /memory/search` endpoint to `docker/orchestrator/main.py`.
+- [ ] Use the existing `POST /memory/search-text` endpoint for a text query (or `POST /memory/search` for a precomputed embedding); do not add a duplicate `GET` endpoint without a compatibility requirement.
 - [ ] Wire context injection into `chat/src/QueryEngine.ts` — call the search endpoint before each `submit()`, inject as `<memory>` block, cap at ~1500 tokens, soft-fail if DB unreachable.
 - [ ] Create `memory/notes/projects/ai-orchestrator/` with starter `overview.md` and `decisions/`.
 - [ ] Write `memory/ingest_notes.py` CLI to ingest `memory/notes/` into `text_chunks` via existing `source_ingestion.py`.
