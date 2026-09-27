@@ -54,6 +54,7 @@ CREATE_MEMORY_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_items (
     memory_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     content TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'project_fact',
     embedding vector(768) NOT NULL,
     project_id UUID NULL REFERENCES projects(id) ON DELETE CASCADE,
     task_id UUID NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -71,6 +72,7 @@ CREATE_GLOBAL_MEMORY_TABLE = """
 CREATE TABLE IF NOT EXISTS global_memory_items (
     memory_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     content TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'project_fact',
     content_hash TEXT NOT NULL,
     embedding vector(768) NOT NULL,
     source_key TEXT NOT NULL,
@@ -110,6 +112,20 @@ CREATE TABLE IF NOT EXISTS global_memory_categories (
 );
 """
 
+ALTER_MEMORY_KIND_COLUMNS = """
+ALTER TABLE memory_items
+ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'project_fact';
+
+ALTER TABLE global_memory_items
+ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'project_fact';
+
+CREATE INDEX IF NOT EXISTS idx_memory_items_kind
+ON memory_items (project_id, kind);
+
+CREATE INDEX IF NOT EXISTS idx_global_memory_items_kind
+ON global_memory_items (source_key, kind);
+"""
+
 CREATE_CODE_CHUNKS_TABLE = """
 CREATE TABLE IF NOT EXISTS code_chunks (
     id BIGSERIAL PRIMARY KEY,
@@ -121,6 +137,12 @@ CREATE TABLE IF NOT EXISTS code_chunks (
     end_line INTEGER NOT NULL,
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
+    search_vector tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('simple', coalesce(file_path, '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(symbol_name, '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(chunk_type, '')), 'B') ||
+        setweight(to_tsvector('simple', coalesce(content, '')), 'C')
+    ) STORED,
     embedding vector(768) NOT NULL,
     embedding_model TEXT NOT NULL,
     pagerank_score DOUBLE PRECISION NOT NULL DEFAULT 0.0,
@@ -145,6 +167,12 @@ CREATE TABLE IF NOT EXISTS global_code_chunks (
     end_line INTEGER NOT NULL,
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
+    search_vector tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('simple', coalesce(file_path, '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(symbol_name, '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(chunk_type, '')), 'B') ||
+        setweight(to_tsvector('simple', coalesce(content, '')), 'C')
+    ) STORED,
     embedding vector(768) NOT NULL,
     embedding_model TEXT NOT NULL,
     pagerank_score DOUBLE PRECISION NOT NULL DEFAULT 0.0,
@@ -201,6 +229,9 @@ ON code_chunks (content_hash);
 CREATE INDEX IF NOT EXISTS idx_code_chunks_embedding
 ON code_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_search_vector
+ON code_chunks USING GIN (search_vector);
 """
 
 CREATE_GLOBAL_CODE_CHUNKS_INDEXES = """
@@ -213,6 +244,27 @@ ON global_code_chunks (content_hash);
 CREATE INDEX IF NOT EXISTS idx_global_code_chunks_embedding
 ON global_code_chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS idx_global_code_chunks_search_vector
+ON global_code_chunks USING GIN (search_vector);
+"""
+
+ALTER_CODE_CHUNKS_SEARCH_VECTOR = """
+ALTER TABLE code_chunks
+ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('simple', coalesce(file_path, '')), 'A') ||
+    setweight(to_tsvector('simple', coalesce(symbol_name, '')), 'A') ||
+    setweight(to_tsvector('simple', coalesce(chunk_type, '')), 'B') ||
+    setweight(to_tsvector('simple', coalesce(content, '')), 'C')
+) STORED;
+
+ALTER TABLE global_code_chunks
+ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('simple', coalesce(file_path, '')), 'A') ||
+    setweight(to_tsvector('simple', coalesce(symbol_name, '')), 'A') ||
+    setweight(to_tsvector('simple', coalesce(chunk_type, '')), 'B') ||
+    setweight(to_tsvector('simple', coalesce(content, '')), 'C')
+) STORED;
 """
 
 ALTER_MEMORY_EMBEDDING_DIMENSION = """

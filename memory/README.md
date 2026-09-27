@@ -81,11 +81,27 @@ High-level `MemoryManager` API over `memory_items`.
 
 Use `memory_items` for durable named memories. For code/text RAG retrieval use `code_chunks`/`text_chunks` via `retrieval.py`.
 
+Durable memories include a closed `kind` taxonomy enforced in Python:
+`constraint`, `preference`, `decision`, `project_fact`, `code_note`,
+`bug_note`, `session_summary`, and `open_question`. New memory writes default
+to `project_fact`, and durable-memory search can filter by one or more kinds.
+
 ### `source_ingestion.py`
 Ingestion pipeline for project text sources. Handles `.md`, `.txt`, `.rst`, `.pdf`, `.json`/`.ndjson` (conversation exports). Tracks ingested files in `project_text_sources`, stores chunks in `text_chunks`. Supports project-scoped and global-scoped ingestion.
 
+### `ingest_notes.py`
+CLI for ingesting human-authored Markdown notes from `memory/notes/` into the
+text retrieval layer. Supports dry-run validation before touching the database.
+
+### `promote_candidate.py`
+CLI for reviewing generated `memory/review/*.candidate.md` files and promoting
+approved content into durable `memory_items`. Promotion requires interactive
+confirmation unless `--yes` is supplied.
+
 ### `code_chunking.py`
-AST-based Python chunker. Produces symbol-level chunks (functions, classes, methods) with safe fallbacks for unparseable files.
+Symbol-oriented code chunker. Produces Python AST chunks plus conservative
+TypeScript/TSX and shell chunks with safe module/script fallbacks for files that
+cannot be parsed into symbols.
 
 ### `code_embeddings.py`
 CodeBERT (768-dim) embedder with GPU/CPU fallback. Used by `code_indexer.py`.
@@ -94,7 +110,9 @@ CodeBERT (768-dim) embedder with GPU/CPU fallback. Used by `code_indexer.py`.
 Incremental hash-based indexer. Skips files whose content hash matches an existing `code_chunks` row; only re-embeds changed symbols.
 
 ### `code_search.py`
-Vector search over `code_chunks` for a given project.
+Hybrid dense + PostgreSQL full-text search over `code_chunks` for a given
+project. Exact identifiers, file names, route names, and CLI flags are matched
+lexically, then fused with CodeBERT vector results.
 
 ### `embed_repo.py`
 GPU-powered repository indexing tool. Walks a repo tree, classifies files (code vs prose), chunks, embeds, and stores as project-scoped memories. Designed to run on the RTX 5090 as a background job.

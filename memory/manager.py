@@ -64,6 +64,7 @@ import asyncpg
 import numpy as np
 
 from . import models
+from .kinds import DEFAULT_MEMORY_KIND, validate_memory_kind
 from .pgvector_utils import to_pgvector_literal
 from .vector_store import PgVectorStore, VectorStore
 
@@ -90,9 +91,11 @@ async def initialize_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(models.CREATE_CATEGORY_TABLE)
     await conn.execute(models.CREATE_MEMORY_CATEGORY_TABLE)
     await conn.execute(models.CREATE_GLOBAL_MEMORY_CATEGORY_TABLE)
+    await conn.execute(models.ALTER_MEMORY_KIND_COLUMNS)
     await conn.execute(models.CREATE_CODE_CHUNKS_TABLE)
     await conn.execute(models.CREATE_GLOBAL_CODE_CHUNKS_TABLE)
     await conn.execute(models.CREATE_EMBEDDING_RUNS_TABLE)
+    await conn.execute(models.ALTER_CODE_CHUNKS_SEARCH_VECTOR)
     await conn.execute(models.ALTER_MEMORY_EMBEDDING_DIMENSION)
     await conn.execute(models.UPSERT_DEFAULT_SYSTEM)
     # Create embedding index
@@ -135,6 +138,7 @@ class MemoryManager:
         task_id: Optional[str] = None,
         system_id: Optional[str] = None,
         created_by: str,
+        kind: str = DEFAULT_MEMORY_KIND,
         categories: Optional[Sequence[str]] = None,
         table: str = "memory_items",
         category_table: str = "memory_categories",
@@ -159,6 +163,7 @@ class MemoryManager:
         """
         # Ensure embedding is float32; asyncpg automatically casts a
         # Python list to the pgvector ``vector`` type.
+        kind = validate_memory_kind(kind)
         emb = to_pgvector_literal(embedding)
         async with conn.transaction():
             # Insert memory item and retrieve its ID
@@ -166,8 +171,8 @@ class MemoryManager:
                 f"""
                 INSERT INTO {table} (
                     content, embedding, project_id, task_id, system_id,
-                    created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6)
+                    created_by, kind
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING memory_id
                 """,
                 content,
@@ -176,6 +181,7 @@ class MemoryManager:
                 task_id,
                 system_id,
                 created_by,
+                kind,
             )
             memory_id: str = record["memory_id"]
             # Upsert categories and link to memory
@@ -211,6 +217,7 @@ class MemoryManager:
         system_id: Optional[str] = None,
         task_id: Optional[str] = None,
         categories: Optional[Sequence[str]] = None,
+        kinds: Optional[Sequence[str]] = None,
         top_k: int = 5,
         table: str = "memory_items",
         category_table: str = "memory_categories",
@@ -233,13 +240,16 @@ class MemoryManager:
         :returns: List of (memory_id, similarity) tuples.
         """
         filters = []
-        params: List[str] = []
         if project_id:
             filters.append(f"project_id = '{project_id}'")
         if system_id:
             filters.append(f"system_id = '{system_id}'")
         if task_id:
             filters.append(f"task_id = '{task_id}'")
+        if kinds:
+            validated_kinds = [validate_memory_kind(kind) for kind in kinds]
+            quoted = ", ".join(f"'{kind}'" for kind in validated_kinds)
+            filters.append(f"kind IN ({quoted})")
         if categories:
             # Join on memory_categories/categories to ensure all
             # specified category names are associated with the memory

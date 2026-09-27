@@ -1,0 +1,12 @@
+profiles:
+  current:
+    description: Existing retrieval behavior before Plan 1 changes.
+  code_hybrid:
+    description: Dense code search fused with PostgreSQL lexical search.
+
+metrics:
+  k: [1, 3, 5, 10]
+
+defaults:
+  profile: code_hybrid
+  api_url: http://localhost:8000

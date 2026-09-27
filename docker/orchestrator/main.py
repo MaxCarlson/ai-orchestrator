@@ -18,6 +18,7 @@ from pydantic_settings import BaseSettings
 
 from memory.code_embeddings import CodeEmbedder
 from memory.code_search import search_code
+from memory.kinds import DEFAULT_MEMORY_KIND, validate_memory_kind
 from memory.manager import MemoryManager, initialize_schema
 from memory.model_registry import register_model
 from memory.retrieval import hybrid_search, invalidate_bm25_cache
@@ -494,7 +495,7 @@ async def _attach_code_context(task_data: dict) -> dict:
     query_embedding = embedder.embed_query(description)
 
     async with pool.acquire() as conn:
-        results = await search_code(conn, project_id, query_embedding, top_k=8)
+        results = await search_code(conn, project_id, description, query_embedding, top_k=8)
 
     if not results:
         return {}
@@ -1139,6 +1140,7 @@ class MemorySearchRequest(BaseModel):
     system_id: Optional[str] = None
     task_id: Optional[str] = None
     categories: Optional[List[str]] = None
+    kinds: Optional[List[str]] = None
     top_k: int = Field(default=5, ge=1, le=50)
 
 
@@ -1153,6 +1155,7 @@ class MemorySearchTextRequest(BaseModel):
 
 class MemoryAddRequest(BaseModel):
     content: str
+    kind: str = DEFAULT_MEMORY_KIND
     project_id: Optional[str] = None
     task_id: Optional[str] = None
     system_id: Optional[str] = None
@@ -1860,6 +1863,7 @@ async def get_stats():
 async def list_memory_items(
     project_id: Optional[str] = None,
     category: Optional[str] = None,
+    kind: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -1887,6 +1891,13 @@ async def list_memory_items(
                 """
             )
 
+        if kind:
+            try:
+                params.append(validate_memory_kind(kind))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            clauses.append(f"m.kind = ${len(params)}")
+
         if search:
             params.append(f"%{search}%")
             clauses.append(f"m.content ILIKE ${len(params)}")
@@ -1898,6 +1909,7 @@ async def list_memory_items(
             SELECT
                 m.memory_id,
                 m.content,
+                m.kind,
                 m.project_id,
                 m.task_id,
                 m.system_id,
@@ -1923,6 +1935,7 @@ async def list_memory_items(
 @app.get("/memory/global/items")
 async def list_global_memory_items(
     category: Optional[str] = None,
+    kind: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -1946,6 +1959,13 @@ async def list_global_memory_items(
                 """
             )
 
+        if kind:
+            try:
+                params.append(validate_memory_kind(kind))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            clauses.append(f"m.kind = ${len(params)}")
+
         if search:
             params.append(f"%{search}%")
             clauses.append(f"m.content ILIKE ${len(params)}")
@@ -1957,6 +1977,7 @@ async def list_global_memory_items(
             SELECT
                 m.memory_id,
                 m.content,
+                m.kind,
                 m.source_key,
                 m.source_project_id,
                 m.created_by,
@@ -2128,6 +2149,10 @@ async def add_memory_item(payload: MemoryAddRequest):
     """Create a memory entry with server-side embeddings."""
     if not payload.content.strip():
         raise HTTPException(status_code=400, detail="content is required")
+    try:
+        kind = validate_memory_kind(payload.kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         embedder = get_text_embedder()
@@ -2146,9 +2171,10 @@ async def add_memory_item(payload: MemoryAddRequest):
             task_id=payload.task_id,
             system_id=payload.system_id,
             created_by=payload.created_by or "koweb",
+            kind=kind,
             categories=payload.categories,
         )
-    return {"status": "created", "memory_id": memory_id}
+    return {"status": "created", "memory_id": memory_id, "kind": kind}
 
 
 @app.post("/memory/search-text")
@@ -2276,6 +2302,12 @@ async def search_memory(payload: MemorySearchRequest):
     """Perform a semantic search against memory embeddings."""
     if not payload.embedding:
         raise HTTPException(status_code=400, detail="embedding vector required")
+    if payload.kinds:
+        try:
+            for kind in payload.kinds:
+                validate_memory_kind(kind)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     pool = await get_db_pool()
     async with pool.acquire() as conn:
@@ -2286,6 +2318,7 @@ async def search_memory(payload: MemorySearchRequest):
             system_id=payload.system_id,
             task_id=payload.task_id,
             categories=payload.categories,
+            kinds=payload.kinds,
             top_k=payload.top_k,
         )
         if not matches:
@@ -2297,6 +2330,7 @@ async def search_memory(payload: MemorySearchRequest):
             SELECT
                 m.memory_id,
                 m.content,
+                m.kind,
                 m.project_id,
                 m.task_id,
                 m.system_id,
@@ -2331,15 +2365,17 @@ async def search_memory(payload: MemorySearchRequest):
 
 @app.post("/memory/code-search/{project_id}")
 async def code_search_endpoint(project_id: str, payload: CodeSearchRequest):
-    """Vector-only search across indexed code chunks."""
+    """Hybrid dense + lexical search across indexed code chunks."""
     await _promote_embeddings_if_project_requested(project_id)
     pool = await get_db_pool()
     embedder = get_code_embedder()
     query_embedding = embedder.embed_query(payload.query)
     async with pool.acquire() as conn:
-        results = await search_code(conn, project_id, query_embedding, top_k=payload.top_k)
+        results = await search_code(conn, project_id, payload.query, query_embedding, top_k=payload.top_k)
     for row in results:
         row["similarity"] = float(row["similarity"])
+        row["lexical_score"] = float(row.get("lexical_score", 0.0))
+        row["rrf_score"] = float(row.get("rrf_score", 0.0))
     return results
 
 

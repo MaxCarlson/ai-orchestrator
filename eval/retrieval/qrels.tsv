@@ -1,0 +1,25 @@
+query_id	path	symbol	grade
+tq-001	shared/task_queue.py	TaskQueue	3
+tq-001	docs/TASK_QUEUE_DESIGN.md		2
+tq-002	bin/local_worker_loop.sh		3
+tq-002	cli_integrations/local_worker.sh		2
+proj-001	docker/orchestrator/main.py	create_project	3
+proj-001	bin/orch	cmd_project_register	3
+proj-002	.kmproj		3
+proj-002	bin/orch	_write_kmproj	2
+emb-001	memory/run_embeddings.py	run_embeddings	3
+emb-001	memory/code_indexer.py	index_repository	2
+emb-002	memory/code_indexer.py	index_repository	3
+emb-002	memory/code_chunking.py	chunk_file_with_stats	2
+ret-001	memory/retrieval.py	hybrid_search	3
+ret-001	tests/test_retrieval.py		1
+ret-002	memory/PLAN.md		3
+ret-002	memory/README.md		2
+lm-001	chat/src/QueryEngine.ts		3
+lm-001	chat/src/backends/lmstudio.ts	ensureLmStudio	3
+lm-002	lms_bridge/app.py		3
+lm-002	lms_bridge/run.sh		2
+ctl-001	docker/orchestrator/main.py	get_runtime_settings_endpoint	3
+ctl-001	bin/orch	cmd_control_pause	2
+ctl-002	shared/task_queue.py	update_priority	3
+ctl-002	shared/task_queue.py	cancel_matching	3
