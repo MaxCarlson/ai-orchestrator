@@ -1,5 +1,7 @@
 # Text RAG Completion + Project Ingestion UX Action Plan
 
+> **Historical proposal, reviewed 2026-09-27.** Several items are now implemented in part: current text ingestion performs per-file content comparison and removal reconciliation, and source upload/list/delete/reingest routes exist. This file is not an active checklist. Revalidate each claim against [`docs/plans/20260926_ai-assistant/01_feature-design-and-code-audit.md`](plans/20260926_ai-assistant/01_feature-design-and-code-audit.md) before acting; atomic replacement, failure recovery, evaluation, and runtime proof remain open.
+
 ## Objective
 
 Complete and harden the new per-project text RAG system, finish integration of the new `text_chunks` / `global_text_chunks` pipeline, and add first-class ingestion workflows for:
