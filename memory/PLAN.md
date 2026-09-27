@@ -1,5 +1,7 @@
 # Memory Subsystem Integration Plan
 
+> **Historical proposal, reviewed 2026-09-27.** Storage, source ingestion, text search and source APIs are already present in part; the current gap list below is not authoritative without checking the feature audit. The API exposes `POST /memory/search-text` for text queries and `POST /memory/search` for supplied vectors, not the GET routes proposed below. Use Alembic/versioned migrations for schema changes; do not treat startup `initialize_schema()` as migration history. See [`docs/plans/20260926_ai-assistant/01_feature-design-and-code-audit.md`](../docs/plans/20260926_ai-assistant/01_feature-design-and-code-audit.md).
+
 This document defines what must be implemented to fully wire the memory system
 into the AI Orchestrator. It is written to be handed directly to another LLM.
 
@@ -74,10 +76,10 @@ MEMORY_KINDS = frozenset({
 The `/embeddings` command in `chat/src/commands/embeddings.ts` currently only
 toggles an in-memory flag. This phase makes it actually retrieve context.
 
-**`docker/orchestrator/main.py`:** Add endpoint:
+**`docker/orchestrator/main.py`:** Reuse the existing text-search route, extend its request only if kind/scope filters are designed and tested:
 
 ```
-GET /memory/search?q=<text>&project_id=<uuid>&kinds=<csv>&limit=<n>
+POST /memory/search-text  (JSON: query, project_id, kinds, limit)
 ```
 
 Returns JSON array of `{ kind, content, source, similarity }`. Calls
@@ -87,11 +89,10 @@ server-side.
 **`chat/src/QueryEngine.ts`:** In `submit()`, before assembling the system
 prompt, if `embeddingsEnabled` is true:
 
-1. `GET http://localhost:8000/memory/search?q=<user_message>&project_id=<id>&limit=8`
+1. `POST http://localhost:8000/memory/search-text` with JSON query/project ID/limit (verify the deployed request schema first).
 2. Wrap response in a `<memory>` block, hard-capped at ~1500 tokens
 3. Prepend to system prompt
-4. On any network error or timeout (500ms): silently skip — `aioc` must work
-   offline
+4. On any network error or timeout: omit memory and surface a non-blocking status; `aioc` must remain usable offline.
 
 **Context packet format:**
 
