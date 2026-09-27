@@ -6,10 +6,9 @@
 
 ---
 
-## Current State (Trust This Over Older Docs)
+## Historical Snapshot (2026-01-07)
 
-This repo has moved beyond initial setup. Some older markdown still reflects earlier phases.
-Use this document as the operational state snapshot.
+> This is a point-in-time snapshot, not the current operational state. Its process, model, and indexing claims must be rechecked. See [`docs/plans/20260926_ai-assistant/00_implementation-plan.md`](plans/20260926_ai-assistant/00_implementation-plan.md) and its feature audit before relying on the status. Live host checks are not established by this historical document.
 
 ### Working
 - PostgreSQL in Docker (shared with knowledge_manager).
