@@ -1,13 +1,15 @@
 # AI Orchestrator — Current Execution Priorities
 
-**Status reviewed:** 2026-09-26 America/Los_Angeles / 2026-09-27 UTC, branch baseline `3e14e826bca044f88dd52cd951526b8bd5f43f83`.
+**Status reviewed:** 2026-09-26 America/Los_Angeles / 2026-09-27 UTC. Architecture baseline `3e14e826bca044f88dd52cd951526b8bd5f43f83`; latest host indexing evidence is for commit `60740004d73d680da448201ee1592f59538e4fa2`.
 
-The [architecture plan](plans/20260926_ai-assistant/00_implementation-plan.md) defines S0–S8. The [execution plan](plans/20260926_ai-assistant/02_execution-plan-and-validation.md) supplies current code findings, ordered work packages and acceptance checks. A checked implementation item below means source exists; it does not certify live behavior.
+The [architecture plan](plans/20260926_ai-assistant/00_implementation-plan.md) defines S0–S8. The [execution plan](plans/20260926_ai-assistant/02_execution-plan-and-validation.md) supplies current code findings, ordered work packages and acceptance checks. Checked implementation items indicate source exists; live evidence is stated separately below.
+
+**Host evidence:** The user ran the disposable indexing suite on WSL2 at commit `60740004d73d680da448201ee1592f59538e4fa2`. `S0-PREFLIGHT`, `S0-CODE-DIRECT`, and `S0-TEXT` passed. The report is local at `reports/s0-f79fa6366d69/report.md`; the report itself is not committed.
 
 ## P0 — Repeatable S0 validation and immediate containment
 
-- [ ] Implement S0.1: one project-local validator, disposable fixture resources, preview default, explicit live writes and stable JSON/Markdown evidence.
-- [ ] Deliver exact pull/run/report instructions before requesting host validation.
+- [x] Implement S0.1: project-local validator, disposable fixture resources, preview default, explicit live writes and stable JSON/Markdown evidence.
+- [x] Deliver exact pull/run/report instructions before requesting host validation.
 - [ ] In parallel, S1.1: address published service exposure and credentials in task commands/logs.
 - [ ] Record dependency/runtime/schema versions and actual host/container launch paths.
 - [ ] Repair onboarding instructions that refer to scripts-repo-only paths.
@@ -23,8 +25,8 @@ The [architecture plan](plans/20260926_ai-assistant/00_implementation-plan.md) d
 
 ## P2 — Code/text indexing and worker proof
 
-- [ ] Run direct indexing on a small disposable Git fixture with real PostgreSQL and embedding model.
-- [ ] Verify owner-scoped rows, expected symbols/spans and model/dimension compatibility.
+- [x] Run direct code and text indexing on a disposable fixture with real PostgreSQL and cached embedding models; verify expected symbol/source, 768D code vector, and project tracking status/model IDs.
+- [ ] Verify isolation against a decoy project and check cross-project search cannot return its rows.
 - [ ] Verify `POST /memory/code-search/{project_id}` and `POST /memory/text-search/{project_id}` return the expected fixture sources.
 - [ ] Capture unchanged/edit/delete/rename reindex behavior. Current code indexer lacks deletion reconciliation; retain a failing reproduction.
 - [ ] Run a harmless task and queued code/text indexing through an isolated host worker.
