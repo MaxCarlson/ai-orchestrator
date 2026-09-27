@@ -26,7 +26,16 @@ while true; do
                 continue
             fi
             echo "[local-worker] Running task $task_id"
-            "$WORKER_SCRIPT" "$task_id"
+            if "$WORKER_SCRIPT" "$task_id"; then
+                :
+            else
+                worker_exit=$?
+                if [ -e "$task_file" ]; then
+                    echo "[local-worker] Worker failed for $task_id (exit $worker_exit); task is still assigned and needs reconciliation" >&2
+                    exit "$worker_exit"
+                fi
+                echo "[local-worker] Task $task_id failed (exit $worker_exit); continuing with remaining tasks" >&2
+            fi
             found=true
         fi
     done
